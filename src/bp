@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """bp, the BatteryPilot command line. Uses the same files as the menu bar app and needs no sudo."""
-import json, os, plistlib, subprocess, sys, time, urllib.request
+import json, os, plistlib, subprocess, sys, time
 
 D = "/Library/Application Support/BatteryPilot"
 C = f"{D}/cfg"
@@ -94,8 +94,12 @@ def update(check_only):
     except OSError:
         cur = "unknown"
     try:
-        with urllib.request.urlopen(f"https://api.github.com/repos/{REPO}/releases/latest", timeout=15) as r:
-            tag = json.load(r)["tag_name"]
+        # curl instead of urllib: Python builds from python.org or Homebrew often lack the macOS root certificates
+        out = subprocess.run(["curl", "-fsSL", "--max-time", "15", f"https://api.github.com/repos/{REPO}/releases/latest"],
+                             capture_output=True, text=True)
+        if out.returncode:
+            raise RuntimeError(out.stderr.strip() or f"curl exit {out.returncode}")
+        tag = json.loads(out.stdout)["tag_name"]
     except Exception as e:
         sys.exit(f"Could not look up the latest release ({e}). Check your internet connection and try again.")
     if cur != "unknown" and ver(tag) <= ver(cur):
