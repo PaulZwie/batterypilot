@@ -224,7 +224,7 @@ def main():
     if not os.path.exists(CFG):
         save(CFG, DEFAULT, 0o664)
     wake, cal = Wake(C), load(CAL, {"stage": None})
-    allowed = caf = last_key = applied = plug_prev = None
+    allowed = caf = last_key = applied = plug_prev = pick_prev = None
     held = (load(ST) or {}).get("allowed")  # band state survives a restart
     t_apply = 0
     last = time.time()
@@ -250,6 +250,11 @@ def main():
         if req:
             cfg["calibrate"] = None
             save(CFG, cfg, 0o664)
+        pick = json.dumps([cfg.get("active"), cfg.get("manual"), cfg["profiles"].get(cfg.get("active"))], sort_keys=True)
+        if pick_prev is not None and pick != pick_prev and cfg.get("override") == "full":
+            cfg["override"] = None  # choosing a limit or profile ends a pending charge to 100%
+            save(CFG, cfg, 0o664)
+        pick_prev = pick
         pname = cfg.get("active")
         p = cfg["profiles"].get(pname) if pname else None
         if p is None:  # no profile selected, use the custom limit from the slider

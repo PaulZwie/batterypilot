@@ -9,7 +9,7 @@ HELP = """usage  bp [status]
        bp profile [NAME]            list profiles or switch to one
        bp set NAME LIMIT SAIL       add or edit a profile, for example bp set gym 75 65
        bp limit LIMIT [SAIL]        custom limit without a profile, for example bp limit 75
-       bp full                      charge to 100% once
+       bp full [cancel]             charge to 100% once, or cancel it
        bp calibrate start|cancel|result
        bp notify on|off             notification when the limit is reached
        bp stats                     live battery statistics
@@ -114,6 +114,9 @@ def main(a):
             sys.exit("Limits must satisfy 20 <= limit <= 100 and 5 <= sail < limit.")
         update(lambda c: c.update(manual={"limit": lim, "sail": sail}, active=None))
         print(f"custom limit {sail} to {lim}% activated")
+    elif cmd == "full" and rest in (["cancel"], ["off"]):
+        update(lambda c: c.update(override=None))
+        print("charge to 100% cancelled")
     elif cmd == "full":
         update(lambda c: c.update(override="full"))
         print("charging to 100% once")

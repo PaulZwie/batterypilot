@@ -48,11 +48,11 @@ def limit_events(p, s):
     """Messages about charging between two status snapshots, p before and s now."""
     lim, out = s["limit"], []
     start = s.get("override") == "full" and p.get("override") != "full"
-    end = p.get("override") == "full" and not s.get("override") and s["pct"] >= 99
+    end = p.get("override") == "full" and not s.get("override")
     if start:
         out.append("Charging to 100% now." if s["plugged"] else "Will charge to 100% as soon as the charger is plugged in.")
     if end:
-        out.append("Charged to 100%.")
+        out.append("Charged to 100%." if s["pct"] >= 99 else "Charge to 100% cancelled.")
     if above_limit(s) and not above_limit(p):
         out.append(f"Battery is above your limit of {lim}%, it will drain down to {lim}% before holding." if s["mode"] == "native"
                    else f"Battery is above your limit of {lim}%, charging stays off until it falls to {s['sail']}%.")
