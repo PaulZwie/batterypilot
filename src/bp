@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""bp, the BatteryPilot command line. Uses the same files as the menu bar app and needs no sudo."""
+import json, os, plistlib, subprocess, sys, time
+
+D = "/Library/Application Support/BatteryPilot"
+C = f"{D}/cfg"
+CFG, ST, RES = f"{C}/config.json", f"{D}/status.json", f"{D}/result.json"
+HELP = """usage  bp [status]
+       bp profile [NAME]            list profiles or switch to one
+       bp set NAME LIMIT SAIL       add or edit a profile, for example bp set gym 75 65
+       bp limit LIMIT [SAIL]        custom limit without a profile, for example bp limit 75
+       bp full                      charge to 100% once
+       bp calibrate start|cancel|result
+       bp notify on|off             notification when the limit is reached
+       bp stats                     live battery statistics
+       bp probe                     check charge control (asks for sudo)"""
+
+
+def rd(p):
+    try:
+        with open(p) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def update(fn):
+    c = rd(CFG)
+    if c is None:
+        sys.exit("No config found, is the BatteryPilot daemon installed and running?")
+    fn(c)
+    t = f"{C}/.cfg.{os.getpid()}"
+    with open(t, "w") as f:
+        json.dump(c, f)
+    os.replace(t, CFG)
+
+
+def status():
+    s = rd(ST)
+    if not s:
+        sys.exit("No status yet, is the BatteryPilot daemon running?")
+    if not s["smc_ok"]:
+        line = "charge control unavailable, run bp probe"
+    elif s["msg"]:
+        line = s["msg"]
+    elif s["cut"]:
+        line = f"running on battery down to {s['sail']}%"
+    elif not s["plugged"]:
+        line = "on battery"
+    else:
+        if s["mode"] == "native" and not s["allowed"]:
+            line = f"holding at {s['limit']}%" if s["pct"] >= s["limit"] else f"charging up to {s['limit']}%"
+        else:
+            line = "charging" if s["allowed"] else f"holding, sailing down to {s['sail']}%"
+    rng = f"hold at {s['limit']}%" if s["mode"] == "native" else f"{s['sail']} to {s['limit']}%"
+    print(f"{s['pct']}%  {s['profile']} ({rng})  {line}")
+
+
+def stats():
+    b = plistlib.loads(subprocess.run(["ioreg", "-arn", "AppleSmartBattery"], capture_output=True).stdout)[0]
+    amp = b.get("InstantAmperage", 0)
+    if amp > 2**63:
+        amp -= 2**64
+    mx, des = b.get("AppleRawMaxCapacity", 0), b.get("DesignCapacity", 0)
+    print(f"health    {mx / des * 100:.1f}% ({mx} of {des} mAh)" if des else "health    unknown")
+    print(f"cycles    {b.get('CycleCount', 0)}")
+    print(f"temp      {b.get('Temperature', 0) / 100:.1f} C")
+    print(f"power     {b.get('Voltage', 0) * amp / 1e6:+.1f} W (negative means discharging)")
+    r = rd(RES)
+    print(f"measured  {r['measured_mah']:.0f} mAh" if r and r["measured_mah"] else "measured  not calibrated yet")
+
+
+def result():
+    r = rd(RES)
+    if not r:
+        sys.exit("No calibration result yet.")
+    m = r["measured_mah"]
+    print(f"measured capacity {m:.0f} mAh ({r['health']:.1f}% of design)" if m
+          else "drain was too short for a reliable measurement, run it again from 100% to 10%")
+    print(f"gauge before {r['gauge_before']} mAh, after {r['gauge_after']} mAh, cycles {r['cycles']}, "
+          f"run {time.strftime('%d.%m.%Y', time.localtime(r['time']))}")
+
+
+def main(a):
+    cmd, rest = (a[0] if a else "status"), a[1:]
+    if cmd == "status":
+        status()
+    elif cmd == "profile":
+        c = rd(CFG) or sys.exit("No config found, is the daemon running?")
+        if not rest:
+            for n, p in c["profiles"].items():
+                print(f"{'*' if n == c['active'] else ' '} {n:10} {p['sail']} to {p['limit']}%")
+            if not c.get("active") and c.get("manual"):
+                print(f"* {'custom':10} {c['manual']['sail']} to {c['manual']['limit']}%")
+        elif rest[0] in c["profiles"]:
+            update(lambda c: c.update(active=rest[0]))
+            print(f"switched to {rest[0]}")
+        else:
+            sys.exit(f"Unknown profile {rest[0]}, add it with bp set.")
+    elif cmd == "set" and len(rest) == 3:
+        try:
+            name, lim, sail = rest[0], int(rest[1]), int(rest[2])
+            assert 20 <= lim <= 100 and 5 <= sail < lim
+        except Exception:
+            sys.exit("Limits must satisfy 20 <= limit <= 100 and 5 <= sail < limit.")
+        update(lambda c: (c["profiles"].__setitem__(name, {"limit": lim, "sail": sail}), c.update(active=name)))
+        print(f"profile {name} set to {sail} to {lim}% and activated")
+    elif cmd == "limit" and len(rest) in (1, 2):
+        try:
+            lim = int(rest[0])
+            sail = int(rest[1]) if len(rest) == 2 else max(5, lim - 10)
+            assert 20 <= lim <= 100 and 5 <= sail < lim
+        except Exception:
+            sys.exit("Limits must satisfy 20 <= limit <= 100 and 5 <= sail < limit.")
+        update(lambda c: c.update(manual={"limit": lim, "sail": sail}, active=None))
+        print(f"custom limit {sail} to {lim}% activated")
+    elif cmd == "full":
+        update(lambda c: c.update(override="full"))
+        print("charging to 100% once")
+    elif cmd == "calibrate" and rest in (["start"], ["cancel"]):
+        update(lambda c: c.update(calibrate=rest[0]))
+        print(f"calibration {rest[0]} requested")
+    elif cmd == "calibrate" and rest == ["result"]:
+        result()
+    elif cmd == "notify" and rest in (["on"], ["off"]):
+        update(lambda c: c.update(notify_limit=rest == ["on"]))
+        print(f"limit notification {rest[0]}")
+    elif cmd == "stats":
+        stats()
+    elif cmd == "probe":
+        os.execvp("sudo", ["sudo", "python3", "/usr/local/libexec/batterypilotd.py", "probe"])
+    else:
+        print(HELP)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

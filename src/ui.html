@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BatteryPilot</title>
+<style>
+/* Colours live here, change them to restyle everything. --a and --b are the blue gradient, --vc follows the current state. */
+:root{--bg:#edf1f6;--card:#f6f8fb;--ink:#182033;--mute:#74819a;--a:#2f6bff;--b:#27a9ff;--hi:#fff;--lo:#cdd6e3;--grid:#dbe2ec;--ok:#16a870;--warn:#f59a2e;--bad:#e5484d;--cal:#8b5cf6;--vc:var(--a)}
+@media(prefers-color-scheme:dark){:root{--bg:#12161d;--card:#1a202a;--ink:#e8edf5;--mute:#8996ab;--hi:#222a37;--lo:#0d1015;--grid:#2a3342}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;font-variant-numeric:tabular-nums}
+.wrap{max-width:1040px;margin:auto;display:grid;grid-template-columns:repeat(12,1fr);gap:20px}
+.s12{grid-column:span 12}.s8{grid-column:span 8}.s4{grid-column:span 4}
+.card{background:var(--card);border-radius:24px;padding:22px;box-shadow:8px 8px 18px var(--lo),-8px -8px 18px var(--hi)}
+h1{font-size:21px;margin:0;font-weight:650}h2{font-size:26px;margin:0 0 6px;font-weight:650}h3{font-size:13px;margin:0 0 14px;color:var(--mute);font-weight:600}p{margin:0;color:var(--mute)}
+header{display:flex;justify-content:space-between;align-items:center;padding:0 4px}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:8px 15px;border-radius:999px;background:var(--card);box-shadow:4px 4px 9px var(--lo),-4px -4px 9px var(--hi);font-weight:550}
+.chip i{width:9px;height:9px;border-radius:50%;background:var(--vc)}
+.hero{display:grid;grid-template-columns:1fr 1.5fr;gap:24px;align-items:center;border-left:6px solid var(--vc)}
+#flow{width:100%;height:auto;overflow:visible;--fc:var(--vc)}
+.nd{fill:var(--card);filter:drop-shadow(4px 4px 7px var(--lo)) drop-shadow(-4px -4px 7px var(--hi))}
+.ic{fill:none;stroke:currentColor;stroke-width:3.5;stroke-linecap:round;stroke-linejoin:round}
+.t1{fill:var(--ink);font-size:14px;font-weight:600}.t2{fill:var(--mute);font-size:12px}
+.ln{fill:none;stroke-width:4;stroke-linecap:round;stroke-dasharray:2 10}
+.ln.act{stroke:var(--fc);animation:fl 1s linear infinite}.ln.act.rev{animation-direction:reverse}.ln.idle,.ln.off{stroke:var(--grid)}.ln.off{opacity:.5}
+.ar{fill:var(--fc)}.hide{display:none}
+@keyframes fl{to{stroke-dashoffset:-12}}
+@media(prefers-reduced-motion:reduce){.ln.act{animation:none}}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:16px}
+.kpi{background:var(--card);border-radius:20px;padding:16px 18px;box-shadow:6px 6px 13px var(--lo),-6px -6px 13px var(--hi)}
+.kpi span{display:block;color:var(--mute);font-size:12px}.kpi b{font-size:20px;font-weight:650}
+.pills{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.pill{border:0;cursor:pointer;padding:9px 18px;border-radius:999px;font:inherit;color:var(--mute);background:var(--card);box-shadow:4px 4px 9px var(--lo),-4px -4px 9px var(--hi)}
+.pill.on{color:#fff;background:linear-gradient(135deg,var(--a),var(--b));box-shadow:0 6px 14px rgba(47,107,255,.35)}
+.pill:disabled{opacity:.45;cursor:default}.pill:focus-visible,input:focus-visible,.sw:focus-visible{outline:2px solid var(--a);outline-offset:2px}
+.row{display:grid;grid-template-columns:120px 1fr 56px;gap:14px;align-items:center;margin:12px 0}
+.row span:last-child{text-align:right;font-weight:600}
+input[type=range]{-webkit-appearance:none;appearance:none;height:8px;border-radius:8px;background:linear-gradient(90deg,var(--a),var(--b)) 0/var(--p,50%) 100% no-repeat,var(--grid);outline:0}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(24,32,51,.35);cursor:pointer}
+.acts{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:16px}
+.sw{width:50px;height:28px;border-radius:14px;border:0;cursor:pointer;background:var(--grid);position:relative;transition:background .2s}
+.sw:after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.3);transition:left .2s}
+.sw.on{background:linear-gradient(135deg,var(--a),var(--b))}.sw.on:after{left:25px}
+.ring svg{width:100%;max-width:190px;display:block;margin:auto}
+#cv{width:100%;height:auto}.ax{fill:var(--mute);font-size:11px}
+.steps{display:flex;margin:6px 0 18px}.st{flex:1;text-align:center;position:relative;color:var(--mute);font-size:12px}
+.st:before{content:"";position:absolute;top:9px;left:-50%;width:100%;height:4px;background:var(--grid)}.st:first-child:before{display:none}
+.st b{position:relative;display:block;width:22px;height:22px;margin:0 auto 8px;border-radius:50%;background:var(--grid);box-shadow:0 0 0 5px var(--card)}
+.st.dn:before,.st.dn b{background:var(--a)}.st.cur b{background:var(--cal)}.st.cur:before{background:var(--a)}.st.cur span{color:var(--ink);font-weight:600}
+input[type=text]{border:0;border-radius:999px;padding:9px 16px;font:inherit;color:var(--ink);background:var(--card);box-shadow:inset 3px 3px 7px var(--lo),inset -3px -3px 7px var(--hi);width:130px}
+.po{display:none}.hint{font-size:12px;margin-top:2px}
+body.pop{padding:14px}.pop .wrap{grid-template-columns:1fr;gap:14px}.pop .wrap>*{grid-column:auto}.pop .np{display:none}.pop .po{display:inline-block}
+.pop .card{padding:16px;border-radius:20px}.pop .hero{grid-template-columns:1fr}.pop h2{font-size:21px}.pop .row{grid-template-columns:90px 1fr 48px}
+@media(max-width:820px){body:not(.pop) .wrap>*{grid-column:span 12}.kpis{grid-template-columns:repeat(2,1fr)}.hero{grid-template-columns:1fr}}
+</style></head><body>
+<div class="wrap">
+<header class="s12"><h1>BatteryPilot</h1><span class="chip" id="chip"><i></i><span id="cl"></span></span></header>
+<section class="card s12 hero"><div><h2 id="ht"></h2><p id="hd"></p></div>
+<svg id="flow" viewBox="0 0 600 160" role="img" aria-label="Power flow between charger, Mac and battery">
+<g transform="translate(90,0)" id="n1"><rect class="nd" x="-52" y="12" width="104" height="88" rx="22"/><g class="ic" transform="translate(0,56)"><rect x="-15" y="-10" width="30" height="20" rx="7"/><path d="M-7-23v13M7-23v13M0 10v14"/></g><text class="t1" id="t1" y="124" text-anchor="middle"/><text class="t2" id="d1" y="142" text-anchor="middle"/></g>
+<g transform="translate(300,0)" id="n2"><rect class="nd" x="-52" y="12" width="104" height="88" rx="22"/><g class="ic" transform="translate(0,56)"><rect x="-22" y="-20" width="44" height="28" rx="4"/><path d="M-30 17H30"/></g><text class="t1" id="t2" y="124" text-anchor="middle"/><text class="t2" id="d2" y="142" text-anchor="middle"/></g>
+<g transform="translate(510,0)" id="n3"><rect class="nd" x="-52" y="12" width="104" height="88" rx="22"/><g class="ic" transform="translate(0,56)"><rect x="-26" y="-15" width="48" height="30" rx="6"/><path d="M26-5v10"/><rect id="bf" x="-22" y="-11" width="40" height="22" rx="3" fill="var(--fc)" stroke="none"/></g><text class="t1" id="t3" y="124" text-anchor="middle"/><text class="t2" id="d3" y="142" text-anchor="middle"/></g>
+<path class="ln" id="l1" d="M150 56H246"/><path class="ar" id="a1" d="M250 56l-11-7v14z"/>
+<path class="ln" id="l2" d="M354 56H450"/><path class="ar" id="a2r" d="M454 56l-11-7v14z"/><path class="ar" id="a2l" d="M350 56l11-7v14z"/>
+<text class="t2" id="m2" x="402" y="42" text-anchor="middle"/></svg></section>
+<section class="kpis s12 np" id="kpis"></section>
+<section class="card s8"><h3>Charge limit</h3><div class="pills" id="pl"></div>
+<div class="row"><span>Hold at</span><input type="range" id="lim" min="20" max="100"><span id="limv"></span></div>
+<div class="row" id="sailrow"><span>Resume at</span><input type="range" id="sail" min="5" max="99"><span id="sailv"></span></div>
+<p class="hint">Move a slider to set a limit right away, no profile needed.<span class="np"> To keep these values, name them and press Add.</span></p>
+<div class="acts"><button class="pill" onclick="act({do:'full'})">Charge to 100% once</button><span class="po"><button class="pill" onclick="act({do:'overview'})">Open overview</button></span>
+<span style="margin-left:auto;display:flex;align-items:center;gap:10px" class="np"><input type="text" id="nn" placeholder="New profile" maxlength="20"><button class="pill" id="add">Add</button></span></div>
+<div class="acts"><button class="sw" id="sw" role="switch" aria-label="Notify on charging events"></button><span>Notify me about charging events</span></div></section>
+<section class="card s4 np"><h3>Battery level</h3><div class="ring" id="r1"></div></section>
+<section class="card s8 np"><h3>History</h3><div class="pills" id="tabs"></div><svg id="cv" viewBox="0 0 640 230"></svg><div class="pills" id="spans" style="margin:10px 0 0"></div></section>
+<section class="card s4 np"><h3>Battery health</h3><div class="ring" id="r2"></div></section>
+<section class="card s12 np"><h3>Calibration</h3><div class="steps" id="steps"></div><div class="acts" style="margin:0"><p id="ct" style="flex:1"></p><button class="pill" id="cs" onclick="act({do:'calibrate',what:'start'})">Start</button><button class="pill" id="cc" onclick="act({do:'calibrate',what:'cancel'})">Cancel</button></div></section>
+</div>
+<script>
+const $=s=>document.querySelector(s),POP=location.search.includes('pop');
+document.body.classList.toggle('pop',POP);
+let S,span=86400,tab='pct',drag=false;
+const SP={86400:'24 h',604800:'7 days',2592000:'30 days'},TB={pct:'Level',temp:'Temperature',watts:'Power',health:'Health'};
+async function load(){if(document.hidden)return;try{S=await(await fetch('api/state?span='+span)).json();render()}catch(e){}}
+async function act(o){await fetch('api/do',{method:'POST',body:JSON.stringify(o)});setTimeout(load,1500)}
+function view(s,l){
+ const lim=s.limit,p=s.pct,w=l.batt_w,f=s.flow||(!s.plugged?'battery':w>0.5?'charging':w<-0.5?'draining':'holding');
+ if(!s.smc_ok)return{c:'--bad',k:'Problem',t:'Charge control is not working',d:s.msg||'BatteryPilot cannot limit charging right now. Run bp probe in Terminal.',f};
+ if(s.calibrating){const n=['charge','hold','drain','recharge'].indexOf(s.stage)+1;return{c:'--cal',k:'Calibrating',t:`Calibrating, step ${n} of 4`,d:s.msg.replace(/^Calibration \d\/4, /,'').replace(/^./,x=>x.toUpperCase()),f}}
+ if(f=='charging')return{c:'--a',k:'Charging',t:`Charging to ${lim}%`,d:'The charger powers your Mac and fills the battery. Charging stops at your limit.',f};
+ if(f=='holding')return{c:'--ok',k:'Holding',t:`Holding at ${p}%`,d:'The charger powers your Mac. The battery rests, so it wears less.',f};
+ if(f=='draining')return{c:'--warn',k:'Battery in use',t:'Using the battery while plugged in',d:'Your Mac needs more power than the charger delivers, or the level is above your limit.',f};
+ return{c:'--warn',k:'On battery',t:'Running on battery',d:`Plug in the charger and BatteryPilot keeps the battery at ${lim}%.`,f}}
+function flow(s,l,v){
+ const f=v.f,on=f!='battery',ch=f=='charging',dr=f=='draining'||f=='battery',set=(i,c)=>$(i).setAttribute('class',c);
+ set('#l1',on?'ln act':'ln off');set('#a1',on?'ar':'ar hide');
+ set('#l2',ch?'ln act':dr?'ln act rev':'ln idle');set('#a2r',ch?'ar':'ar hide');set('#a2l',dr?'ar':'ar hide');
+ $('#n1').style.color=on?'var(--fc)':'var(--mute)';$('#n2').style.color='var(--ink)';$('#n3').style.color='var(--ink)';
+ $('#bf').setAttribute('width',Math.max(0,40*s.pct/100));
+ $('#t1').textContent=on?'Charger connected':'No charger';$('#d1').textContent=on?(l.adapter_w?l.adapter_w+' W adapter':'Powering the Mac'):'Plug in to charge';
+ $('#t2').textContent='Your Mac';$('#d2').textContent=l.sys_w?`Using ${l.sys_w} W`:(on?'Powered by charger':'Powered by battery');
+ $('#t3').textContent=`Battery ${s.pct}%`;
+ $('#d3').textContent=ch?'Charging'+(l.batt_w>0?` +${l.batt_w} W`:''):dr?'Supplying power'+(l.batt_w<0?` ${-l.batt_w} W`:''):'Resting';
+ $('#m2').textContent=ch?'charging':dr?'battery in use':'paused'}
+function ring(el,v,txt,sub,mark){const C=339.3,id='g'+el.id;let m='';
+ if(mark!=null&&mark<100){const a=(mark/100*360-90)*Math.PI/180,x=70+Math.cos(a)*54,y=70+Math.sin(a)*54;m=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8.5" fill="#fff" style="filter:drop-shadow(0 1px 3px rgba(24,32,51,.45))"/><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="var(--a)"/>`}
+ el.innerHTML=`<svg viewBox="0 0 140 140"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--a)"/><stop offset="1" stop-color="var(--b)"/></linearGradient></defs><circle cx="70" cy="70" r="54" fill="none" stroke="var(--grid)" stroke-width="14"/><circle cx="70" cy="70" r="54" fill="none" stroke="url(#${id})" stroke-width="14" stroke-linecap="round" stroke-dasharray="${C*Math.min(v,100)/100} ${C}" transform="rotate(-90 70 70)"/>${m}<text x="70" y="75" text-anchor="middle" font-size="26" font-weight="650" fill="var(--ink)">${txt}</text><text x="70" y="94" text-anchor="middle" font-size="10" fill="var(--mute)">${sub}</text></svg>`}
+function pills(el,obj,cur,fn){el.replaceChildren(...Object.keys(obj).map(k=>{const b=document.createElement('button');b.className='pill'+(k==cur?' on':'');b.textContent=obj[k];b.onclick=()=>fn(k);return b}))}
+function sl(){const l=$('#lim'),a=$('#sail');a.max=Math.max(6,+l.value-1);if(+a.value>+a.max)a.value=a.max;
+ for(const r of[l,a])r.style.setProperty('--p',(r.value-r.min)/(r.max-r.min)*100+'%');$('#limv').textContent=l.value+' %';$('#sailv').textContent=a.value+' %'}
+['lim','sail'].forEach(id=>{const r=$('#'+id);r.oninput=()=>{drag=true;sl()};r.onchange=()=>{drag=false;act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value})}});
+$('#add').onclick=()=>{const n=$('#nn').value.trim();if(n){act({do:'set',name:n,limit:+$('#lim').value,sail:+$('#sail').value});$('#nn').value=''}};
+$('#sw').onclick=()=>act({do:'notify',on:!S.config.notify_limit});
+function chart(){
+ const h=S.history||[],l=S.live||{},s=S.status,svg=$('#cv');
+ const val=r=>tab=='pct'?r.pct:tab=='temp'?r.temp:tab=='watts'?r.volt*r.amps/1e6:l.design?r.raw_max/l.design*100:null;
+ const pts=h.map(r=>[r.t,val(r)]).filter(p=>p[1]!=null);
+ if(pts.length<2){svg.innerHTML='<text x="320" y="115" text-anchor="middle" class="ax">Collecting data, check back in a few minutes</text>';return}
+ const W=640,H=230,L=42,R=10,T=10,B=26,t1=Date.now()/1000,t0=t1-span;
+ let lo=tab=='pct'?0:Math.min(...pts.map(p=>p[1])),hi=tab=='pct'?100:Math.max(...pts.map(p=>p[1]));if(hi-lo<1){hi+=.5;lo-=.5}
+ const x=t=>L+(t-t0)/span*(W-L-R),y=v=>T+(1-(v-lo)/(hi-lo))*(H-T-B);
+ const d=pts.map((p,i)=>(i?'L':'M')+x(p[0]).toFixed(1)+' '+y(p[1]).toFixed(1)).join('');
+ let g='',xs='';for(let i=0;i<=4;i++){const v=lo+(hi-lo)*i/4;g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end" class="ax">${v.toFixed(tab=='pct'?0:1)}</text>`}
+ for(let i=0;i<4;i++){const t=t0+span*(i+.5)/4,D=new Date(t*1000);xs+=`<text x="${x(t)}" y="${H-6}" text-anchor="middle" class="ax">${span>86400?D.toLocaleDateString([],{day:'numeric',month:'short'}):D.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</text>`}
+ const band=tab=='pct'?`<line x1="${L}" x2="${W-R}" y1="${y(s.limit)}" y2="${y(s.limit)}" stroke="var(--ok)" stroke-dasharray="4 4"/><text x="${W-R}" y="${y(s.limit)-5}" text-anchor="end" class="ax">limit ${s.limit}%</text>`:'';
+ svg.innerHTML=`<defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--a)" stop-opacity=".35"/><stop offset="1" stop-color="var(--a)" stop-opacity="0"/></linearGradient></defs>${g}${xs}${band}<path d="${d}L${x(pts[pts.length-1][0])} ${y(lo)}L${x(pts[0][0])} ${y(lo)}Z" fill="url(#ag)"/><path d="${d}" fill="none" stroke="var(--a)" stroke-width="2.5" stroke-linejoin="round"/>`}
+function render(){
+ const s=S.status,c=S.config,l=S.live||{},r=S.result;if(!s||!c)return;
+ const v=view(s,l);document.documentElement.style.setProperty('--vc',`var(${v.c})`);
+ $('#cl').textContent=v.k;$('#ht').textContent=v.t;$('#hd').textContent=v.d;flow(s,l,v);
+ pills($('#pl'),{...Object.fromEntries(Object.keys(c.profiles).map(n=>[n,n])),__custom:'Custom'},c.active||'__custom',n=>n=='__custom'?act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value}):act({do:'profile',name:n}));
+ const p=(c.active&&c.profiles[c.active])||c.manual||{limit:s.limit,sail:s.sail};$('#sailrow').style.display=s.mode=='native'?'none':'';
+ if(!drag){$('#lim').value=p.limit;$('#sail').value=p.sail}sl();$('#sw').className='sw'+(c.notify_limit?' on':'');$('#sw').setAttribute('aria-checked',!!c.notify_limit);
+ if(POP)return;
+ const T=[['Level',s.pct+' %'],['Health',l.design?(l.raw_max/l.design*100).toFixed(1)+' %':'n/a'],['Cycles',l.cycles??'n/a'],['Temperature',l.temp!=null?l.temp.toFixed(1)+' °C':'n/a'],['Battery power',l.batt_w!=null?(l.batt_w>0?'+':'')+l.batt_w+' W':'n/a']];
+ $('#kpis').innerHTML=T.map(t=>`<div class="kpi"><span>${t[0]}</span><b>${t[1]}</b></div>`).join('');
+ ring($('#r1'),s.pct,s.pct+'%','limit '+s.limit+'%',s.limit);
+ const hp=l.design?l.raw_max/l.design*100:0;ring($('#r2'),hp,hp?hp.toFixed(0)+'%':'n/a',hp?`${l.raw_max} of ${l.design} mAh`:'');
+ pills($('#tabs'),TB,tab,k=>{tab=k;render()});pills($('#spans'),SP,span,k=>{span=+k;load()});chart();
+ const st=['charge','hold','drain','recharge'],nm=['Charge to 100%','Rest one hour','Drain to 10%','Recharge'],i=st.indexOf(s.stage),dn=s.stage=='done';
+ $('#steps').innerHTML=nm.map((n,k)=>`<div class="st ${dn||k<i?'dn':''} ${k==i?'cur':''}"><b></b><span>${n}</span></div>`).join('');
+ $('#ct').textContent=s.calibrating?s.msg:r&&r.measured_mah?`Last result ${Math.round(r.measured_mah)} mAh, ${r.health.toFixed(1)}% of design capacity.`:'Measures the real capacity of your battery. Takes several hours.';
+ $('#cs').disabled=s.calibrating;$('#cc').disabled=!s.calibrating}
+setInterval(load,4000);document.addEventListener('visibilitychange',load);load();
+</script></body></html>
