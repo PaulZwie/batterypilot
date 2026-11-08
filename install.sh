@@ -81,6 +81,7 @@ sudo cp "$HERE/app/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 sudo codesign --force --deep -s - "$APP" >/dev/null 2>&1 || true
 sudo touch "$APP"
 echo
+[ -f "$HERE/VERSION" ] && sudo cp "$HERE/VERSION" "$D/version"  # lets bp update know what is installed
 echo "Done. Look for the battery in your menu bar."
 echo "If you quit it, open BatteryPilot from your Applications folder (or Spotlight) to bring it back."
 echo "Terminal helper: bp   (try: bp status, bp profile, bp stats)"
