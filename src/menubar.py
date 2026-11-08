@@ -34,7 +34,35 @@ def front():
 
 
 def notify(msg):
-    subprocess.Popen(["osascript", "-e", f'display notification "{msg}" with title "BatteryPilot"'])
+    """The text goes in as an argument, so quotes in a message cannot break the script."""
+    subprocess.Popen(["osascript", "-e", "on run argv", "-e", 'display notification (item 1 of argv) with title "BatteryPilot"',
+                      "-e", "end run", msg])
+
+
+def above_limit(s):
+    """Plugged in, charging held off, and the battery is higher than the limit, so it will drain down to it."""
+    return bool(s["plugged"] and not s["allowed"] and not s["calibrating"] and s["pct"] > s["limit"])
+
+
+def limit_events(p, s):
+    """Messages about charging between two status snapshots, p before and s now."""
+    lim, out = s["limit"], []
+    start = s.get("override") == "full" and p.get("override") != "full"
+    end = p.get("override") == "full" and not s.get("override") and s["pct"] >= 99
+    if start:
+        out.append("Charging to 100% now." if s["plugged"] else "Will charge to 100% as soon as the charger is plugged in.")
+    if end:
+        out.append("Charged to 100%.")
+    if above_limit(s) and not above_limit(p):
+        out.append(f"Battery is above your limit of {lim}%, it will drain down to {lim}% before holding." if s["mode"] == "native"
+                   else f"Battery is above your limit of {lim}%, charging stays off until it falls to {s['sail']}%.")
+    elif above_limit(p) and s["plugged"] and not s["allowed"] and s["pct"] <= lim and not s["calibrating"]:
+        out.append(f"Down to the limit of {lim}%, holding here.")
+    elif not end and ((p["allowed"] and not s["allowed"]) or (s["mode"] == "native" and p["pct"] < lim <= s["pct"])):
+        out.append(f"Limit of {lim}% reached.")
+    if not p["allowed"] and s["allowed"] and s["plugged"] and not start and not s.get("override"):
+        out.append(f"Charging resumed, limit is {lim}%.")
+    return out
 
 
 class App(rumps.App):
@@ -139,9 +167,12 @@ class App(rumps.App):
                 t = "Calibration cancelled." if p["stage"] in ACTIVE else None
             if t:
                 notify(t)
-        elif c.get("notify_limit") and not s["calibrating"] and (
-                (p["allowed"] and not s["allowed"]) or (s["mode"] == "native" and p["pct"] < s["limit"] <= s["pct"])):
-            notify(f"Limit of {s['limit']}% reached.")
+        elif c.get("notify_limit") and not s["calibrating"]:
+            msgs = limit_events(p, s)
+            if msgs:
+                notify(" ".join(msgs))
+        if s.get("warn") and s["warn"] != p.get("warn"):
+            notify(s["warn"])
         if p["smc_ok"] and not s["smc_ok"]:
             notify("Charge control failed, the limit is not active.")
 

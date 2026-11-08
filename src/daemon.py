@@ -16,6 +16,7 @@ DEFAULT = {"active": "home", "override": None, "calibrate": None, "notify_limit"
                         "work": {"limit": 80, "sail": 70},
                         "travel": {"limit": 100, "sail": 95}}}
 backend = None  # chte, legacy, adapter or none
+rel_alt = False  # second way to lift the macOS limit, used when the first one did not take
 
 
 def run(*a):
@@ -72,8 +73,9 @@ def native_set(limit):
     if not os.path.exists(ORIG):
         save(ORIG, {"state": dread("MCLFeatureState"), "limit": dread("mclLimitValue")})
     ok = True
-    if limit is None or limit >= 100:
-        ok = run("defaults", "write", PD, "MCLFeatureState", "-int", "0").returncode == 0
+    if limit is None or limit >= 100:  # lift the limit: raise the stored value to 100 first, then switch the feature off
+        ok = run("defaults", "write", PD, "mclLimitValue", "-int", "100").returncode == 0
+        ok = run("defaults", "write", PD, "MCLFeatureState", "-int", "1" if rel_alt else "0").returncode == 0 and ok
     else:  # PowerUIAgent only range checks its XPC setter, so values below 80 work when written as root
         ok = run("defaults", "write", PD, "mclLimitValue", "-int", str(limit)).returncode == 0
         ok = run("defaults", "write", PD, "MCLFeatureState", "-int", "1").returncode == 0 and ok
@@ -95,6 +97,11 @@ def native_restore():
 def fw_limit():
     m = re.search(r"chargeSocLimitSoc\s*=\s*(\d+)", run("pmset", "-g", "battlimit").stdout)
     return int(m.group(1)) if m else None
+
+
+def fw_limits():
+    """Every charge limit the firmware currently holds. Two owners can each hold one, and the lowest one wins."""
+    return [int(v) for v in re.findall(r"chargeSocLimitSoc\s*=\s*(\d+)", run("pmset", "-g", "battlimit").stdout)]
 
 
 def set_charging(on, lim=None):
@@ -192,7 +199,7 @@ def log(row):
 
 
 def main():
-    global backend
+    global backend, rel_alt
     os.makedirs(C, exist_ok=True)
     os.chmod(D, 0o755)
     os.chmod(C, 0o775)
@@ -253,7 +260,7 @@ def main():
             backend = detect()
         native, auto = backend == "native", False
         on_batt = not b["plugged"]
-        stage, msg = cal.get("stage"), ""
+        stage, msg, warn = cal.get("stage"), "", ""
         if stage in ACTIVE:
             want, msg = calibrate(cal, b, dt, on_batt, auto)
             save(CAL, cal)
@@ -290,17 +297,24 @@ def main():
         elif not keep and caf:
             caf.terminate()
             caf = None
-        if native and not want and now - t_apply > 150 and not msg:  # soft check that macOS accepted the limit
-            fw = fw_limit()
-            if fw != lim:
-                msg = f"macOS reports {fw}%, expected {lim}%" if fw else f"macOS limit not active yet, expected {lim}%"
+        if native and now - t_apply > (30 if want else 150):  # soft check that macOS accepted what we asked for
+            vals = fw_limits()
+            if want and any(v < 100 for v in vals):  # we asked for charging but the firmware still holds a limit
+                if not rel_alt:
+                    rel_alt, applied = True, None  # try the other way to lift the limit once
+                else:
+                    warn = msg = f"macOS still holds the charge limit at {min(vals)}%, charging to 100% is blocked"
+            elif not want and not msg:
+                fw = fw_limit()
+                if fw != lim:
+                    msg = f"macOS reports {fw}%, expected {lim}%" if fw else f"macOS limit not active yet, expected {lim}%"
         near = min(abs(b["pct"] - lim), abs(b["pct"] - sail)) <= 3
         interval = 30 if (stage in ACTIVE or near or cfg.get("override")) else 180
         st = dict(b, allowed=allowed is not False, profile=pname, limit=lim, sail=sail, msg=msg,
-                  stage=stage, calibrating=stage in ACTIVE, smc_ok=ok, mode=backend,
+                  stage=stage, calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
                   cut=backend == "adapter" and allowed is False,
                   health=b["raw_max"] / b["design"] * 100 if b["design"] else None)
-        key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut"))
+        key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut", "override", "warn"))
         if key != last_key or now - last_write > 600:  # write only on change, spares the SSD
             save(ST, dict(st, t=now))
             last_key, last_write = key, now
