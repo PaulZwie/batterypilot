@@ -10,6 +10,7 @@ HELP = """usage  bp [status]
        bp profile [NAME]            list profiles or switch to one
        bp set NAME LIMIT SAIL       add or edit a profile, for example bp set gym 75 65
        bp limit LIMIT [SAIL]        custom limit without a profile, for example bp limit 75
+       bp strategy band|macos       two sliders, or let macOS top up with one limit (applies to the active profile)
        bp full [cancel]             charge to 100% once, or cancel it
        bp pause DURATION|off        lift the limit for a while, for example bp pause 2h or bp pause 90m
        bp ready HH:MM|off|cancel    charge so the battery is full by then, once (bp ready 08:00)
@@ -43,6 +44,15 @@ def update(fn):
     os.replace(t, CFG)
 
 
+def macos(s):
+    return s.get("strategy", "macos" if s["mode"] == "native" else "band") == "macos"
+
+
+def keep(p):
+    """An edit of limit and resume point keeps the strategy that was chosen before."""
+    return {"strategy": p["strategy"]} if p and p.get("strategy") else {}
+
+
 def status():
     s = rd(ST)
     if not s:
@@ -56,11 +66,11 @@ def status():
     elif not s["plugged"]:
         line = "on battery"
     else:
-        if s["mode"] == "native" and not s["allowed"]:
+        if macos(s) and not s["allowed"]:
             line = f"holding at {s['limit']}%" if s["pct"] >= s["limit"] else f"charging up to {s['limit']}%"
         else:
             line = "charging" if s["allowed"] else f"holding, sailing down to {s['sail']}%"
-    rng = f"hold at {s['limit']}%" if s["mode"] == "native" else f"{s['sail']} to {s['limit']}%"
+    rng = f"macOS holds at {s['limit']}%" if macos(s) else f"{s['sail']} to {s['limit']}%"
     print(f"{s['pct']}%  {s['profile']} ({rng})  {line}")
 
 
@@ -187,6 +197,10 @@ def schedule():
         print(f"next: {clock(t)}  {'be fully charged' if kind == 'ready' else 'switch to ' + str(prof)}")
 
 
+def prange(p):
+    return f"macOS holds at {p['limit']}%" if p.get("strategy") == "macos" else f"{p['sail']} to {p['limit']}%"
+
+
 def main(a):
     cmd, rest = (a[0] if a else "status"), a[1:]
     if cmd == "status":
@@ -195,9 +209,9 @@ def main(a):
         c = rd(CFG) or sys.exit("No config found, is the daemon running?")
         if not rest:
             for n, p in c["profiles"].items():
-                print(f"{'*' if n == c['active'] else ' '} {n:10} {p['sail']} to {p['limit']}%")
+                print(f"{'*' if n == c['active'] else ' '} {n:10} {prange(p)}")
             if not c.get("active") and c.get("manual"):
-                print(f"* {'custom':10} {c['manual']['sail']} to {c['manual']['limit']}%")
+                print(f"* {'custom':10} {prange(c['manual'])}")
         elif rest[0] in c["profiles"]:
             update(lambda c: c.update(active=rest[0]))
             print(f"switched to {rest[0]}")
@@ -209,7 +223,8 @@ def main(a):
             assert 20 <= lim <= 100 and 5 <= sail < lim
         except Exception:
             sys.exit("Limits must satisfy 20 <= limit <= 100 and 5 <= sail < limit.")
-        update(lambda c: (c["profiles"].__setitem__(name, {"limit": lim, "sail": sail}), c.update(active=name)))
+        update(lambda c: (c["profiles"].__setitem__(name, dict({"limit": lim, "sail": sail}, **keep(c["profiles"].get(name)))),
+                          c.update(active=name)))
         print(f"profile {name} set to {sail} to {lim}% and activated")
     elif cmd == "limit" and len(rest) in (1, 2):
         try:
@@ -218,8 +233,17 @@ def main(a):
             assert 20 <= lim <= 100 and 5 <= sail < lim
         except Exception:
             sys.exit("Limits must satisfy 20 <= limit <= 100 and 5 <= sail < limit.")
-        update(lambda c: c.update(manual={"limit": lim, "sail": sail}, active=None))
+        update(lambda c: c.update(manual=dict({"limit": lim, "sail": sail}, **keep(c.get("manual"))), active=None))
         print(f"custom limit {sail} to {lim}% activated")
+    elif cmd == "strategy" and rest in (["band"], ["macos"]):
+        def f(c):
+            t = c["profiles"].get(c.get("active")) if c.get("active") else None
+            if t is None:
+                t = c.setdefault("manual", {"limit": 80, "sail": 70})
+            t["strategy"] = rest[0]
+        update(f)
+        print("two sliders: hold at the limit, resume at the lower value" if rest[0] == "band"
+              else "macOS tops up by itself and holds at the limit")
     elif cmd == "full" and rest in (["cancel"], ["off"]):
         update(lambda c: c.update(override=None))
         print("charge to 100% cancelled")

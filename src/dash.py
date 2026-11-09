@@ -103,6 +103,11 @@ def clean_rules(raw, profiles):
     return out
 
 
+def strat(a):
+    """Optional top-up strategy sent by the dashboard: band (two sliders) or macos (macOS tops up by itself)."""
+    return {"strategy": a["strategy"]} if a.get("strategy") in ("band", "macos") else {}
+
+
 def do(a):
     act = a.get("do")
     if act == "profile":
@@ -110,11 +115,22 @@ def do(a):
     elif act == "set":
         name, lim, sail = str(a["name"]).strip()[:20], int(a["limit"]), int(a["sail"])
         assert name and 20 <= lim <= 100 and 5 <= sail < lim
-        update(lambda c: (c["profiles"].__setitem__(name, {"limit": lim, "sail": sail}), c.update(active=name)))
+        update(lambda c: (c["profiles"].__setitem__(name, dict({"limit": lim, "sail": sail}, **strat(a))), c.update(active=name)))
     elif act == "limit":  # custom limit, no profile needed
         lim, sail = int(a["limit"]), int(a["sail"])
         assert 20 <= lim <= 100 and 5 <= sail < lim
-        update(lambda c: c.update(manual={"limit": lim, "sail": sail}, active=None))
+
+        def f(c):
+            keep = strat(a) or {k: v for k, v in (c.get("manual") or {}).items() if k == "strategy"}
+            c.update(manual=dict({"limit": lim, "sail": sail}, **keep), active=None)
+        update(f)
+    elif act == "strategy" and a.get("value") in ("band", "macos"):  # applies to the active profile, or the custom limit
+        def f(c):
+            t = c["profiles"].get(c.get("active")) if c.get("active") else None
+            if t is None:
+                t = c.setdefault("manual", {"limit": 80, "sail": 70})
+            t["strategy"] = a["value"]
+        update(f)
     elif act == "full":
         update(lambda c: c.update(override="full"))
     elif act == "calibrate" and a.get("what") in ("start", "cancel"):

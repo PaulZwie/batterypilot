@@ -19,6 +19,8 @@ DEFAULT = {"active": "home", "override": None, "calibrate": None, "notify_limit"
                         "travel": {"limit": 100, "sail": 95}}}
 backend = None  # chte, legacy, adapter or none
 rel_alt = False  # second way to lift the macOS limit, used when the first one did not take
+nat = None  # on Macs with SMC control: "held" or "lifted", what we last did to the macOS limit
+fw_ok = None  # does this Mac offer the macOS charge limit at all
 
 
 def run(*a):
@@ -106,17 +108,38 @@ def fw_limits():
     return [int(v) for v in re.findall(r"chargeSocLimitSoc\s*=\s*(\d+)", run("pmset", "-g", "battlimit").stdout)]
 
 
-def set_charging(on, lim=None):
-    """on=False pauses charging (chte, legacy) or holds at lim (native). on=True lifts the restriction."""
-    global backend
+def macos_limit_ok():
+    """The macOS charge limit is the only control on newer firmware. Older Macs can have it too, if pmset knows about it."""
+    global fw_ok
+    if backend == "native":
+        return True
+    if fw_ok is None:
+        r = run("pmset", "-g", "battlimit")
+        fw_ok = r.returncode == 0 and not any(w in (r.stdout + r.stderr).lower() for w in ("invalid", "unknown", "usage"))
+    return fw_ok
+
+
+def set_charging(on, lim=None, strat="band"):
+    """on=False pauses charging (chte, legacy) or holds at lim (native). on=True lifts the restriction.
+    strat=macos lets the macOS charge limit do the work, which also tops up by itself. On a Mac with SMC control the
+    SMC then stays out of the way. strat=band drives the pause itself, through the SMC or, on native, through the macOS limit."""
+    global backend, nat
     if backend is None:
         backend = detect()
-    if backend == "chte":
-        ok = smc("CHTE", "00000000" if on else "01000000")
-    elif backend == "legacy":
-        ok = any([smc(k, "00" if on else "02") for k in ("CH0B", "CH0C")])
-    else:
+    if backend == "native":
         ok = native_set(None if on else lim)
+    else:
+        free = on or strat == "macos"
+        if backend == "chte":
+            ok = smc("CHTE", "00000000" if free else "01000000")
+        else:
+            ok = any([smc(k, "00" if free else "02") for k in ("CH0B", "CH0C")])
+        if strat == "macos":
+            ok = native_set(None if on else lim) and ok
+            nat = "lifted" if on else "held"
+        elif nat != "lifted" and os.path.exists(ORIG):  # leave no macOS limit behind that would block the band
+            lifted = native_set(None)
+            ok, nat = ok and lifted, "lifted" if lifted else nat
     if not ok:
         backend = None  # probe again next time
     return ok
@@ -303,7 +326,7 @@ def main():
         else:
             print("pause ok:", set_charging(False), "| resume ok:", set_charging(True))
         return
-    signal.signal(signal.SIGTERM, lambda *_: (native_restore() if backend == "native" else set_charging(True), sys.exit(0)))
+    signal.signal(signal.SIGTERM, lambda *_: (None if backend == "native" else set_charging(True), native_restore(), sys.exit(0)))
     if not os.path.exists(CFG):
         save(CFG, DEFAULT, 0o664)
     wake, cal = Wake(C), load(CAL, {"stage": None})
@@ -375,9 +398,13 @@ def main():
         if backend is None:
             backend = detect()
         native, auto = backend == "native", False
+        strat = p.get("strategy") or ("macos" if native else "band")  # macos: one limit, macOS tops up. band: hold at limit, resume at sail
+        if strat == "macos" and not macos_limit_ok():
+            strat = "band"
         on_batt = not b["plugged"]
         stage, msg, warn = cal.get("stage"), "", ""
         if stage in ACTIVE:
+            strat = "band"  # calibration needs charging fully on or off
             want, msg = calibrate(cal, b, dt, on_batt, auto)
             save(CAL, cal)
             stage = cal["stage"]
@@ -387,7 +414,7 @@ def main():
             if b["pct"] >= 100:
                 cfg["override"] = None
                 save(CFG, cfg, 0o664)
-        elif native:
+        elif strat == "macos":
             want = lim >= 100  # hold at lim, the firmware decides when to top up
         elif lim >= 100 or b["pct"] <= max(sail, 15 if auto else 10):
             want = True
@@ -400,11 +427,14 @@ def main():
         elif not msg and rdy:
             msg = f"Charging to be ready by {hm(rdy, now)}"
         held = want
-        sig = (want, lim if native and not want else None)
+        hold = lim
+        if native and strat == "band" and not want and b["pct"] < lim:
+            hold = max(20, b["pct"])  # macOS has no pause, so between the sliders it holds at the current level
+        sig = (want, hold if not want and (native or strat == "macos") else None, strat)
         if now >= fail_until and (sig != applied or now >= next_assert):
             if sig != applied:
                 t_apply = now
-            ok = set_charging(want, lim)  # re-assert now and then, the hardware can reset on sleep
+            ok = set_charging(want, hold, strat)  # re-assert now and then, the hardware can reset on sleep
             applied = sig
             next_assert = now + 300
             if ok:
@@ -417,7 +447,7 @@ def main():
         elif not keep and caf:
             caf.terminate()
             caf = None
-        if native and now - t_apply > (30 if want else 150):  # soft check that macOS accepted what we asked for
+        if (native or strat == "macos") and now - t_apply > (30 if want else 150):  # soft check that macOS accepted what we asked for
             vals = fw_limits()
             if want and any(v < 100 for v in vals):  # we asked for charging but the firmware still holds a limit
                 if not rel_alt:
@@ -426,8 +456,8 @@ def main():
                     warn = msg = f"macOS still holds the charge limit at {min(vals)}%, charging to 100% is blocked"
             elif not want and not msg:
                 fw = fw_limit()
-                if fw != lim:
-                    msg = f"macOS reports {fw}%, expected {lim}%" if fw else f"macOS limit not active yet, expected {lim}%"
+                if fw != hold:
+                    msg = f"macOS reports {fw}%, expected {hold}%" if fw else f"macOS limit not active yet, expected {hold}%"
         near = min(abs(b["pct"] - lim), abs(b["pct"] - sail)) <= 3
         interval = 30 if (stage in ACTIVE or near or cfg.get("override")) else 180
         if pu:
@@ -435,12 +465,12 @@ def main():
         if pu or rdy or cfg.get("schedule") or cfg.get("ready_by"):
             interval = min(interval, 60)  # check the clock about once a minute
         st = dict(b, allowed=allowed is not False, profile=pname, limit=lim, sail=sail, msg=msg,
-                  stage=stage, calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
+                  stage=stage, strategy=strat, macos_ok=macos_limit_ok(), calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
                   pause_until=pu, ready=rdy, lead=int(lead(b["pct"])), plan=plan(cfg, now), sched_t=sst.get("applied", 0),
                   cut=backend == "adapter" and allowed is False,
                   health=b["raw_max"] / b["design"] * 100 if b["design"] and b["raw_max"] else None)
         key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut", "override", "warn",
-                                         "pause_until", "ready", "plan", "sched_t"))
+                                         "pause_until", "ready", "plan", "sched_t", "strategy"))
         if key != last_key or now - last_write > 600:  # write only on change, spares the SSD
             save(ST, dict(st, t=now))
             last_key, last_write = key, now

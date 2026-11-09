@@ -67,7 +67,8 @@ input[type=time],select{border:0;border-radius:999px;padding:9px 16px;font:inher
 <text class="t2" id="m2" x="402" y="42" text-anchor="middle"/></svg></section>
 <section class="kpis s12 np" id="kpis"></section>
 <section class="card s8"><h3>Charge limit</h3><div class="pills" id="pl"></div>
-<div class="row"><span>Hold at</span><input type="range" id="lim" min="20" max="100"><span id="limv"></span></div>
+<div class="pills" id="stp" role="group" aria-label="Top-up strategy" style="margin-bottom:6px"></div><p class="hint" id="sth" style="margin-bottom:6px"></p>
+<div class="row"><span id="limlab">Hold at</span><input type="range" id="lim" min="20" max="100"><span id="limv"></span></div>
 <div class="row" id="sailrow"><span>Resume at</span><input type="range" id="sail" min="5" max="99"><span id="sailv"></span></div>
 <p class="hint">Move a slider to set a limit right away, no profile needed.<span class="np"> To keep these values, name them and press Add.</span></p>
 <div class="acts"><button class="pill" onclick="act({do:'full'})">Charge to 100% once</button><span class="po"><button class="pill" onclick="act({do:'overview'})">Open overview</button></span>
@@ -91,7 +92,7 @@ input[type=time],select{border:0;border-radius:999px;padding:9px 16px;font:inher
 <script>
 const $=s=>document.querySelector(s),POP=location.search.includes('pop');
 document.body.classList.toggle('pop',POP);
-let S,span=86400,tab='pct',drag=false;
+let S,span=86400,tab='pct',drag=false,ST='band';
 const SP={86400:'24 h',604800:'7 days',2592000:'30 days'},TB={pct:'Level',temp:'Temperature',watts:'Power',health:'Health'};
 async function load(){if(document.hidden)return;try{S=await(await fetch('api/state?span='+span)).json();render()}catch(e){}}
 async function act(o){await fetch('api/do',{method:'POST',body:JSON.stringify(o)});setTimeout(load,1500)}
@@ -120,8 +121,8 @@ function ring(el,v,txt,sub,mark){const C=339.3,id='g'+el.id;let m='';
 function pills(el,obj,cur,fn){el.replaceChildren(...Object.keys(obj).map(k=>{const b=document.createElement('button');b.className='pill'+(k==cur?' on':'');b.textContent=obj[k];b.onclick=()=>fn(k);return b}))}
 function sl(){const l=$('#lim'),a=$('#sail');a.max=Math.max(6,+l.value-1);if(+a.value>+a.max)a.value=a.max;
  for(const r of[l,a])r.style.setProperty('--p',(r.value-r.min)/(r.max-r.min)*100+'%');$('#limv').textContent=l.value+' %';$('#sailv').textContent=a.value+' %'}
-['lim','sail'].forEach(id=>{const r=$('#'+id);r.oninput=()=>{drag=true;sl()};r.onchange=()=>{drag=false;act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value})}});
-$('#add').onclick=()=>{const n=$('#nn').value.trim();if(n){act({do:'set',name:n,limit:+$('#lim').value,sail:+$('#sail').value});$('#nn').value=''}};
+['lim','sail'].forEach(id=>{const r=$('#'+id);r.oninput=()=>{drag=true;sl()};r.onchange=()=>{drag=false;act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value,strategy:ST})}});
+$('#add').onclick=()=>{const n=$('#nn').value.trim();if(n){act({do:'set',name:n,limit:+$('#lim').value,sail:+$('#sail').value,strategy:ST});$('#nn').value=''}};
 $('#sw').onclick=()=>act({do:'notify',on:!S.config.notify_limit});
 function chart(){
  const h=S.history||[],l=S.live||{},s=S.status,svg=$('#cv');
@@ -157,8 +158,11 @@ function render(){
  const s=S.status,c=S.config,l=S.live||{},r=S.result;if(!s||!c)return;
  const v=view(s,l);document.documentElement.style.setProperty('--vc',`var(${v.c})`);
  $('#cl').textContent=v.k;$('#ht').textContent=v.t;$('#hd').textContent=v.d;flow(s,l,v);
- pills($('#pl'),{...Object.fromEntries(Object.keys(c.profiles).map(n=>[n,n])),__custom:'Custom'},c.active||'__custom',n=>n=='__custom'?act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value}):act({do:'profile',name:n}));
- const p=(c.active&&c.profiles[c.active])||c.manual||{limit:s.limit,sail:s.sail};$('#sailrow').style.display=s.mode=='native'?'none':'';
+ pills($('#pl'),{...Object.fromEntries(Object.keys(c.profiles).map(n=>[n,n])),__custom:'Custom'},c.active||'__custom',n=>n=='__custom'?act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value,strategy:ST}):act({do:'profile',name:n}));
+ const p=(c.active&&c.profiles[c.active])||c.manual||{limit:s.limit,sail:s.sail};ST=p.strategy||(s.mode=='native'?'macos':'band');if(ST=='macos'&&s.macos_ok===false)ST='band';
+ pills($('#stp'),{band:'Two sliders',macos:'macOS top-up'},ST,k=>act({do:'strategy',value:k}));$('#stp').lastChild.disabled=s.macos_ok===false;
+ $('#sth').textContent=ST=='macos'?'macOS holds the battery at the limit and tops it up by itself, like the charging limit in System Settings.':'BatteryPilot stops charging at the first value and starts again once the level falls to the second.';
+ $('#sailrow').style.display=ST=='macos'?'none':'';$('#limlab').textContent=ST=='macos'?'Limit':'Hold at';
  if(!drag){$('#lim').value=p.limit;$('#sail').value=p.sail}sl();$('#sw').className='sw'+(c.notify_limit?' on':'');$('#sw').setAttribute('aria-checked',!!c.notify_limit);renderPause(s);
  if(POP)return;
  const T=[['Level',s.pct+' %'],['Health',l.design?(l.raw_max/l.design*100).toFixed(1)+' %':'n/a'],['Cycles',l.cycles??'n/a'],['Temperature',l.temp!=null?l.temp.toFixed(1)+' °C':'n/a'],['Battery power',l.batt_w!=null?(l.batt_w>0?'+':'')+l.batt_w+' W':'n/a']];

@@ -54,6 +54,11 @@ def next_at(hhmm):
     return int(t.timestamp())
 
 
+def macos(s):
+    """True when macOS tops the battery up by itself (one limit), false for the two-slider band."""
+    return s.get("strategy", "macos" if s["mode"] == "native" else "band") == "macos"
+
+
 def above_limit(s):
     """Plugged in, charging held off, and the battery is higher than the limit, so it will drain down to it."""
     return bool(s["plugged"] and not s["allowed"] and not s["calibrating"] and s["pct"] > s["limit"])
@@ -82,12 +87,12 @@ def limit_events(p, s):
         out.append(f"Schedule: switched to {s['profile']}, limit {lim}%.")
     limit_same = s["limit"] == p["limit"]
     if above_limit(s) and not above_limit(p):
-        out.append(f"Battery is above your limit of {lim}%, it will drain down to {lim}% before holding." if s["mode"] == "native"
+        out.append(f"Battery is above your limit of {lim}%, it will drain down to {lim}% before holding." if macos(s)
                    else f"Battery is above your limit of {lim}%, charging stays off until it falls to {s['sail']}%.")
     elif above_limit(p) and s["plugged"] and not s["allowed"] and s["pct"] <= lim and not s["calibrating"] and limit_same:
         out.append(f"Down to the limit of {lim}%, holding here.")
     elif not (end or pause_off or ready_off) and ((p["allowed"] and not s["allowed"])
-                                                  or (s["mode"] == "native" and p["pct"] < lim <= s["pct"])):
+                                                  or (macos(s) and p["pct"] < lim <= s["pct"])):
         out.append(f"Limit of {lim}% reached.")
     if not p["allowed"] and s["allowed"] and s["plugged"] and not (start or pause_on or ready_on) \
             and not s.get("override") and not s.get("pause_until") and not s.get("ready"):
@@ -118,6 +123,8 @@ class App(rumps.App):
                      self.nl, None, self.cal, rumps.MenuItem("Battery statistics…", callback=self.stats),
                      rumps.MenuItem("Open dashboard…", callback=lambda _: subprocess.Popen(["open", dash.start()])),
                      None, rumps.MenuItem("Quit", callback=self.quit_app)]
+        self.strat = rumps.MenuItem("Let macOS top up (one limit)", callback=self.toggle_strategy)
+        self.menu.insert_after("Set custom limit…", self.strat)
         self.names, self.s, self.mtime, self.nag_t = None, None, 0, 0
         try:
             self.tick(None)
@@ -128,6 +135,22 @@ class App(rumps.App):
         """Unload the launch agent first, so launchd does not start the app again. The daemon keeps enforcing the limit."""
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.batterypilot.menu"])
         rumps.quit_application()  # reached when started by hand instead of by launchd
+
+    def toggle_strategy(self, _):
+        """Switch the active profile (or the custom limit) between the two sliders and the macOS top-up."""
+        s = rd(ST) or {}
+        if not s:
+            return
+        new = "band" if macos(s) else "macos"
+        if new == "macos" and not s.get("macos_ok", True):
+            return notify("This Mac does not offer the macOS charge limit.")
+
+        def f(c):
+            t = c["profiles"].get(c.get("active")) if c.get("active") else None
+            if t is None:
+                t = c.setdefault("manual", {"limit": 80, "sail": 70})
+            t["strategy"] = new
+        update(f)
 
     def pause_for(self, minutes):
         until = int(time.time() + minutes * 60) if minutes else None
@@ -181,11 +204,12 @@ class App(rumps.App):
             self.prof[n].state = int(n == c["active"])
         self.nl.state = int(bool(c.get("notify_limit")))
         live = s["plugged"] or s["cut"]
-        charging = live and (s["allowed"] or (s["mode"] == "native" and s["pct"] < s["limit"]))
+        charging = live and (s["allowed"] or (macos(s) and s["pct"] < s["limit"]))
         state = "alert" if not s["smc_ok"] else "bolt" if charging else "plug" if live else "battery"
         self.icon = icons.icon(state, s["pct"])
         self.title = f" {s['pct']}%" + (" cal" if s["calibrating"] else "")
-        rng = f"hold at {s['limit']}%" if s["mode"] == "native" else f"{s['sail']}–{s['limit']}%"
+        self.strat.state = int(macos(s))
+        rng = f"macOS holds at {s['limit']}%" if macos(s) else f"{s['sail']}–{s['limit']}%"
         self.head.title = f"{s['pct']}%   " + {"paused": "limit paused", "ready": "charging for ready-by"}.get(
             s["profile"], f"{s['profile']} ({rng})")
         if not s["smc_ok"]:
@@ -196,7 +220,7 @@ class App(rumps.App):
             self.sub.title = f"Running on battery down to {s['sail']}%"
         elif not s["plugged"]:
             self.sub.title = "On battery"
-        elif s["mode"] == "native" and not s["allowed"]:
+        elif macos(s) and not s["allowed"]:
             self.sub.title = f"Holding at {s['limit']}%" if s["pct"] >= s["limit"] else f"Charging up to {s['limit']}%"
         else:
             self.sub.title = "Charging" if s["allowed"] else f"Holding, sailing down to {s['sail']}%"
@@ -249,7 +273,9 @@ class App(rumps.App):
             assert r.clicked and 20 <= lim <= 100 and 5 <= sail < lim
         except Exception:
             return
-        update(lambda c: (c["profiles"].__setitem__(name, {"limit": lim, "sail": sail}), c.update(active=name)))
+        keep = (c["profiles"].get(name) or p).get("strategy")  # an edit keeps the strategy of the profile
+        update(lambda c: (c["profiles"].__setitem__(name, dict({"limit": lim, "sail": sail}, **({"strategy": keep} if keep else {}))),
+                          c.update(active=name)))
 
     def custom(self, _):
         front()
@@ -264,7 +290,8 @@ class App(rumps.App):
             assert r.clicked and 20 <= lim <= 100 and 5 <= sail < lim
         except Exception:
             return
-        update(lambda c: c.update(manual={"limit": lim, "sail": sail}, active=None))
+        update(lambda c: c.update(manual=dict({"limit": lim, "sail": sail},
+                                              **{k: v for k, v in (c.get("manual") or {}).items() if k == "strategy"}), active=None))
 
     def cal_start(self, _):
         front()
