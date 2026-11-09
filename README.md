@@ -21,10 +21,8 @@ You need a Mac, an internet connection and your Mac password. The first run can 
    curl -fsSL https://raw.githubusercontent.com/PaulZwie/batterypilot/main/get.sh | bash
    ```
 3. Type your Mac password when asked. Nothing appears while you type, that is normal. Press Enter.
-4. If macOS asks for your password, enter it. The installer downloads Python automatically when it is not already installed.
+4. If a window offers to install the "Command Line Tools", click Install and wait for it to finish. Then paste the line from step 2 again.
 5. When it says **Done**, look for the battery icon in your menu bar.
-
-The installer creates its own virtual environment and installs the menu-bar dependencies there. It installs Python automatically when needed, so no separate Python, pip, or Command Line Tools setup is required.
 
 **Prefer a download?** Click the green **Code** button on this page, choose **Download ZIP**, unzip it and double-click `Install.command`. If macOS refuses to open it, right-click the file and choose Open. If it still refuses, go to System Settings > Privacy & Security, scroll down and click **Open Anyway**.
 

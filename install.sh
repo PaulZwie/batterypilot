@@ -9,8 +9,6 @@ APP="/Applications/BatteryPilot.app"
 D="/Library/Application Support/BatteryPilot"
 DP=/Library/LaunchDaemons/com.batterypilot.daemon.plist
 AP="$HOME/Library/LaunchAgents/com.batterypilot.menu.plist"
-PYTHON_VERSION="3.11.9"
-PYTHON_PKG_URL="https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-macos11.pkg"
 
 [ "$(uname)" = Darwin ] || { echo "BatteryPilot only runs on a Mac."; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "Run this without sudo. It asks for your password when needed."; exit 1; }
@@ -25,24 +23,11 @@ if [ "$1" = "--uninstall" ]; then
 fi
 
 PY="$(command -v python3 || true)"
-if [ -z "$PY" ]; then
-  echo "Python 3 is not installed. Downloading the official Python ${PYTHON_VERSION} package..."
-  PKG="$(mktemp -t batterypilot-python).pkg"
-  trap 'rm -f "$PKG"' EXIT
-  if ! curl -fsSL --retry 5 --retry-delay 3 "$PYTHON_PKG_URL" -o "$PKG"; then
-    echo "Could not download Python from python.org. Check your internet connection and try again."
-    exit 1
-  fi
-  echo "Installing Python (macOS will ask for your password)..."
-  sudo installer -pkg "$PKG" -target /
-  rm -f "$PKG"
-  trap - EXIT
-  PY="$(command -v python3 || true)"
-  [ -n "$PY" ] || PY="/usr/local/bin/python3"
-  [ -x "$PY" ] || {
-    echo "Python was installed, but its executable could not be found. Please restart Terminal and run the install link again."
-    exit 1
-  }
+if [ -z "$PY" ] || { [ "$PY" = /usr/bin/python3 ] && ! xcode-select -p >/dev/null 2>&1; }; then
+  echo "BatteryPilot needs Python 3, which comes with Apple's Command Line Tools."
+  echo "A window will now offer to install them. Let it finish (5 to 10 minutes), then run this installer again."
+  xcode-select --install 2>/dev/null || true
+  exit 1
 fi
 
 SMC_BIN="${1:-$(command -v smc || true)}"
@@ -74,12 +59,7 @@ sudo launchctl bootstrap system "$DP"
 echo "Installing the menu bar app (needs internet for one small download)..."
 mkdir -p "$HOME/.batterypilot" "$HOME/Library/LaunchAgents"
 [ -d "$HOME/.batterypilot/venv" ] || "$PY" -m venv "$HOME/.batterypilot/venv"
-VENV_PY="$HOME/.batterypilot/venv/bin/python"
-# rumps does not cap its PyObjC dependency. PyObjC 13 requires Python 3.11,
-# while Apple's Command Line Tools may provide Python 3.9.
-"$VENV_PY" -m pip install -q --upgrade pip setuptools wheel
-"$VENV_PY" -m pip install -q --upgrade --only-binary=pyobjc-core,pyobjc-framework-Cocoa \
-  "rumps==0.4.0" "pyobjc-framework-Cocoa<13"
+"$HOME/.batterypilot/venv/bin/pip" install -q rumps
 cp "$SRC/menubar.py" "$SRC/dash.py" "$SRC/icons.py" "$SRC/ui.html" "$HOME/.batterypilot/"
 cat > "$AP" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
