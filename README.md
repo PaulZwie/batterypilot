@@ -32,6 +32,13 @@ You can read exactly what the installer does in [`install.sh`](install.sh) befor
 
 In the dashboard (menu > Open dashboard) drag the limit slider to any value from 20 to 100 and it applies right away. Profiles are optional, and the Add button saves the current slider values as one. Click the battery icon in the menu bar to switch profile, edit a profile, set a custom limit, charge to 100% once, open the dashboard or start a calibration. Choose Quit to close the icon. Your limit stays active in the background even when the icon is closed. To bring the icon back, open **BatteryPilot** from your Applications folder (or press `Cmd + Space` and type BatteryPilot). It also starts by itself every time you log in.
 
+**Two ways to hold the limit.** Under the sliders you can choose how the battery is kept at the limit:
+
+- **Two sliders**: charging stops at the first value and only starts again once the level has fallen to the second one. Fewer, longer charge pauses.
+- **macOS top-up**: one slider. macOS holds the battery at the limit and tops it up by itself, the same as the charging limit in System Settings.
+
+The choice is saved per profile, so `home` can use two sliders while `work` lets macOS handle it.
+
 For Terminal fans there is also a `bp` command:
 
 ```
@@ -39,6 +46,7 @@ bp                    show the current state
 bp profile            list profiles, bp profile work switches
 bp limit 75           custom limit, no profile needed
 bp set gym 75 65      add or edit a profile (limit 75, resume at 65)
+bp strategy macos     let macOS top up (one limit), bp strategy band for two sliders
 bp full               charge to 100% once
 bp calibrate start    start a calibration (takes several hours)
 bp stats              live battery statistics
