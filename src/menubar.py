@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """BatteryPilot menu bar app. Reads status.json, writes config.json, posts notifications."""
-import json, os, subprocess, time
+import datetime, json, os, subprocess, time
 import rumps
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import dash, icons
@@ -39,6 +39,21 @@ def notify(msg):
                       "-e", "end run", msg])
 
 
+def clock(t):
+    """Clock time of an epoch, with the weekday when it is not today."""
+    same = datetime.date.fromtimestamp(t) == datetime.date.today()
+    return time.strftime("%H:%M" if same else "%a %H:%M", time.localtime(t))
+
+
+def next_at(hhmm):
+    h, m = (int(x) for x in hhmm.strip().split(":"))
+    assert 0 <= h < 24 and 0 <= m < 60
+    t = datetime.datetime.combine(datetime.date.today(), datetime.time(h, m))
+    if t.timestamp() <= time.time():
+        t += datetime.timedelta(days=1)
+    return int(t.timestamp())
+
+
 def above_limit(s):
     """Plugged in, charging held off, and the battery is higher than the limit, so it will drain down to it."""
     return bool(s["plugged"] and not s["allowed"] and not s["calibrating"] and s["pct"] > s["limit"])
@@ -49,18 +64,33 @@ def limit_events(p, s):
     lim, out = s["limit"], []
     start = s.get("override") == "full" and p.get("override") != "full"
     end = p.get("override") == "full" and not s.get("override")
+    pause_on, pause_off = bool(s.get("pause_until")) and not p.get("pause_until"), bool(p.get("pause_until")) and not s.get("pause_until")
+    ready_on, ready_off = bool(s.get("ready")) and not p.get("ready"), bool(p.get("ready")) and not s.get("ready")
     if start:
         out.append("Charging to 100% now." if s["plugged"] else "Will charge to 100% as soon as the charger is plugged in.")
     if end:
         out.append("Charged to 100%." if s["pct"] >= 99 else "Charge to 100% cancelled.")
+    if pause_on:
+        out.append(f"Limit paused until {clock(s['pause_until'])}.")
+    if pause_off:
+        out.append(f"Limit pause is over, the limit of {lim}% is active again.")
+    if ready_on:
+        out.append(f"Charging now to be ready by {clock(s['ready'])}.")
+    if ready_off:
+        out.append("Ready-by charging is over.")
+    if s.get("sched_t") and s["sched_t"] != p.get("sched_t") and s["profile"] not in ("paused", "ready"):
+        out.append(f"Schedule: switched to {s['profile']}, limit {lim}%.")
+    limit_same = s["limit"] == p["limit"]
     if above_limit(s) and not above_limit(p):
         out.append(f"Battery is above your limit of {lim}%, it will drain down to {lim}% before holding." if s["mode"] == "native"
                    else f"Battery is above your limit of {lim}%, charging stays off until it falls to {s['sail']}%.")
-    elif above_limit(p) and s["plugged"] and not s["allowed"] and s["pct"] <= lim and not s["calibrating"]:
+    elif above_limit(p) and s["plugged"] and not s["allowed"] and s["pct"] <= lim and not s["calibrating"] and limit_same:
         out.append(f"Down to the limit of {lim}%, holding here.")
-    elif not end and ((p["allowed"] and not s["allowed"]) or (s["mode"] == "native" and p["pct"] < lim <= s["pct"])):
+    elif not (end or pause_off or ready_off) and ((p["allowed"] and not s["allowed"])
+                                                  or (s["mode"] == "native" and p["pct"] < lim <= s["pct"])):
         out.append(f"Limit of {lim}% reached.")
-    if not p["allowed"] and s["allowed"] and s["plugged"] and not start and not s.get("override"):
+    if not p["allowed"] and s["allowed"] and s["plugged"] and not (start or pause_on or ready_on) \
+            and not s.get("override") and not s.get("pause_until") and not s.get("ready"):
         out.append(f"Charging resumed, limit is {lim}%.")
     return out
 
@@ -70,6 +100,10 @@ class App(rumps.App):
         super().__init__("BatteryPilot", title="", icon=icons.icon("battery", 50), template=True, quit_button=None)
         self.head, self.sub = rumps.MenuItem("BatteryPilot"), rumps.MenuItem("")
         self.prof, self.cal = rumps.MenuItem("Profile"), rumps.MenuItem("Calibration")
+        self.pause = rumps.MenuItem("Pause limit")
+        self.pause.update([rumps.MenuItem(t, callback=lambda _, m=m: self.pause_for(m))
+                           for t, m in (("for 30 minutes", 30), ("for 1 hour", 60), ("for 2 hours", 120), ("for 4 hours", 240))]
+                          + [rumps.MenuItem("Resume limit now", callback=lambda _: self.pause_for(0))])
         self.nl = rumps.MenuItem("Notify when limit is reached",
                                  callback=lambda _: update(lambda c: c.update(notify_limit=not c.get("notify_limit"))))
         self.cal.update([rumps.MenuItem("Start full calibration", callback=self.cal_start),
@@ -79,6 +113,8 @@ class App(rumps.App):
                      rumps.MenuItem("Edit or add profile…", callback=self.edit),
                      rumps.MenuItem("Set custom limit…", callback=self.custom),
                      rumps.MenuItem("Charge to 100% once", callback=lambda _: update(lambda c: c.update(override="full"))),
+                     self.pause, rumps.MenuItem("Ready by…", callback=self.ready_by),
+                     rumps.MenuItem("Cancel ready-by", callback=self.ready_cancel),
                      self.nl, None, self.cal, rumps.MenuItem("Battery statistics…", callback=self.stats),
                      rumps.MenuItem("Open dashboard…", callback=lambda _: subprocess.Popen(["open", dash.start()])),
                      None, rumps.MenuItem("Quit", callback=self.quit_app)]
@@ -92,6 +128,27 @@ class App(rumps.App):
         """Unload the launch agent first, so launchd does not start the app again. The daemon keeps enforcing the limit."""
         subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/com.batterypilot.menu"])
         rumps.quit_application()  # reached when started by hand instead of by launchd
+
+    def pause_for(self, minutes):
+        until = int(time.time() + minutes * 60) if minutes else None
+        update(lambda c: c.update(pause_until=until))
+
+    def ready_by(self, _):
+        front()
+        w = rumps.Window("Time as HH:MM, for example 08:00. The limit stays until shortly before, then the battery charges "
+                         "to 100% so it is full by then. For repeating plans use the dashboard schedule.",
+                         "Ready by", "08:00", "Set", "Cancel", dimensions=(260, 24))
+        r = w.run()
+        try:
+            assert r.clicked
+            at = next_at(r.text)
+        except Exception:
+            return
+        update(lambda c: c.update(ready_by={"at": at}, ready_skip=None))
+
+    def ready_cancel(self, _):
+        t = (rd(ST) or {}).get("ready")
+        update(lambda c: c.update(ready_by=None, ready_skip=t if t else c.get("ready_skip")))
 
     def build_profiles(self, c):
         self.names = list(c["profiles"])
@@ -129,7 +186,8 @@ class App(rumps.App):
         self.icon = icons.icon(state, s["pct"])
         self.title = f" {s['pct']}%" + (" cal" if s["calibrating"] else "")
         rng = f"hold at {s['limit']}%" if s["mode"] == "native" else f"{s['sail']}–{s['limit']}%"
-        self.head.title = f"{s['pct']}%   {s['profile']} ({rng})"
+        self.head.title = f"{s['pct']}%   " + {"paused": "limit paused", "ready": "charging for ready-by"}.get(
+            s["profile"], f"{s['profile']} ({rng})")
         if not s["smc_ok"]:
             self.sub.title = "Charge control unavailable, run the probe command"
         elif s["msg"]:

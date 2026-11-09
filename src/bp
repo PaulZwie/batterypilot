@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """bp, the BatteryPilot command line. Uses the same files as the menu bar app and needs no sudo."""
-import json, os, plistlib, subprocess, sys, time
+import datetime, json, os, plistlib, re, subprocess, sys, time
 
 D = "/Library/Application Support/BatteryPilot"
 C = f"{D}/cfg"
@@ -11,6 +11,12 @@ HELP = """usage  bp [status]
        bp set NAME LIMIT SAIL       add or edit a profile, for example bp set gym 75 65
        bp limit LIMIT [SAIL]        custom limit without a profile, for example bp limit 75
        bp full [cancel]             charge to 100% once, or cancel it
+       bp pause DURATION|off        lift the limit for a while, for example bp pause 2h or bp pause 90m
+       bp ready HH:MM|off|cancel    charge so the battery is full by then, once (bp ready 08:00)
+       bp schedule                  list the schedule and what is coming up
+       bp schedule profile NAME HH:MM [DAYS]   switch profile at a time, DAYS like mon-fri, weekdays, weekend, daily
+       bp schedule ready HH:MM [DAYS]          be fully charged by a time on those days
+       bp schedule remove N         remove rule number N
        bp calibrate start|cancel|result
        bp notify on|off             notification when the limit is reached
        bp stats                     live battery statistics
@@ -92,7 +98,7 @@ def ver(v):
     return tuple(int(x) for x in v.lstrip("v").split(".") if x.isdigit())
 
 
-def update(check_only):
+def self_update(check_only):
     """Compares the installed version with the latest GitHub release and runs the installer for it."""
     try:
         cur = open(f"{D}/version").read().strip()
@@ -113,6 +119,72 @@ def update(check_only):
     if check_only:
         sys.exit("Run bp update to install it.")
     os.execvp("bash", ["bash", "-c", f"curl -fsSL https://raw.githubusercontent.com/{REPO}/{tag}/get.sh | BP_REF={tag} bash"])
+
+
+NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_days(s):
+    """mon-fri, sat,sun, weekdays, weekend or daily, as a list of 0 = Monday."""
+    s = s.lower()
+    if s in ("daily", "everyday", "all"):
+        return list(range(7))
+    if s == "weekdays":
+        return list(range(5))
+    if s in ("weekend", "weekends"):
+        return [5, 6]
+    out = set()
+    for part in s.split(","):
+        a, _, b = part.partition("-")
+        i, j = NAMES.index(a[:3]), NAMES.index((b or a)[:3])
+        out.update(range(i, j + 1) if i <= j else list(range(i, 7)) + list(range(j + 1)))
+    return sorted(out)
+
+
+def days_text(d):
+    return "daily" if len(d) == 7 else "weekdays" if d == list(range(5)) else "weekend" if d == [5, 6] else ",".join(NAMES[i] for i in d)
+
+
+def parse_time(s):
+    h, m = (int(x) for x in s.split(":"))
+    assert 0 <= h < 24 and 0 <= m < 60
+    return f"{h:02d}:{m:02d}"
+
+
+def next_at(hhmm):
+    h, m = (int(x) for x in hhmm.split(":"))
+    t = datetime.datetime.combine(datetime.date.today(), datetime.time(h, m))
+    if t.timestamp() <= time.time():
+        t += datetime.timedelta(days=1)
+    return int(t.timestamp())
+
+
+def minutes(s):
+    """30, 90m, 2h or 1h30m, as minutes."""
+    parts = re.findall(r"(\d+)\s*([hm]?)", s.lower())
+    total = sum(int(n) * (60 if u == "h" else 1) for n, u in parts)
+    assert parts and 0 < total <= 2880
+    return total
+
+
+def clock(t):
+    return time.strftime("%a %H:%M", time.localtime(t))
+
+
+def schedule():
+    c = rd(CFG) or sys.exit("No config found, is the daemon running?")
+    for i, r in enumerate(c.get("schedule") or [], 1):
+        what = f"switch to {r['profile']}" if r["action"] == "profile" else "be fully charged"
+        print(f"{i}  {r['time']}  {days_text(r['days']):9} {what}")
+    if not c.get("schedule"):
+        print("no schedule rules yet")
+    if (c.get("ready_by") or {}).get("at"):
+        print(f"once: be fully charged by {clock(c['ready_by']['at'])}")
+    s = rd(ST) or {}
+    if s.get("pause_until"):
+        print(f"limit paused until {clock(s['pause_until'])}")
+    for t, kind, prof in s.get("plan") or []:
+        print(f"next: {clock(t)}  {'be fully charged' if kind == 'ready' else 'switch to ' + str(prof)}")
 
 
 def main(a):
@@ -154,6 +226,53 @@ def main(a):
     elif cmd == "full":
         update(lambda c: c.update(override="full"))
         print("charging to 100% once")
+    elif cmd == "pause" and len(rest) == 1:
+        if rest[0] in ("off", "cancel", "stop"):
+            update(lambda c: c.update(pause_until=None))
+            print("limit active again")
+        else:
+            try:
+                m = minutes(rest[0])
+            except Exception:
+                sys.exit("Give a duration like 30, 90m, 2h or 1h30m, up to 48 hours.")
+            until = int(time.time() + m * 60)
+            update(lambda c: c.update(pause_until=until))
+            print(f"limit paused until {clock(until)}")
+    elif cmd == "ready" and len(rest) == 1:
+        if rest[0] in ("off", "cancel"):
+            t = (rd(ST) or {}).get("ready")
+            update(lambda c: c.update(ready_by=None, ready_skip=t if t else c.get("ready_skip")))
+            print("ready-by plan removed")
+        else:
+            try:
+                at = next_at(parse_time(rest[0]))
+            except Exception:
+                sys.exit("Give a time like 08:00.")
+            update(lambda c: c.update(ready_by={"at": at}, ready_skip=None))
+            print(f"the battery will be full by {clock(at)}, charging starts shortly before")
+    elif cmd == "schedule" and not rest:
+        schedule()
+    elif cmd == "schedule" and rest[0] in ("profile", "ready") and len(rest) >= (3 if rest[0] == "profile" else 2):
+        try:
+            if rest[0] == "profile":
+                prof, rule = rest[1], {"action": "profile", "profile": rest[1], "time": parse_time(rest[2])}
+                days = parse_days(rest[3]) if len(rest) > 3 else list(range(7))
+                assert prof in (rd(CFG) or {}).get("profiles", {})
+            else:
+                rule = {"action": "ready", "time": parse_time(rest[1])}
+                days = parse_days(rest[2]) if len(rest) > 2 else list(range(7))
+        except Exception:
+            sys.exit("Usage: bp schedule profile NAME HH:MM [DAYS] (NAME must be an existing profile) or bp schedule ready HH:MM [DAYS]")
+        rule["days"] = days
+        update(lambda c: c.update(schedule=(c.get("schedule") or []) + [rule]))
+        print(f"added: {rule['time']} {days_text(days)}")
+    elif cmd == "schedule" and rest[0] == "remove" and len(rest) == 2 and rest[1].isdigit():
+        n = int(rest[1]) - 1
+        c = rd(CFG) or {}
+        if not 0 <= n < len(c.get("schedule") or []):
+            sys.exit("No such rule, see bp schedule.")
+        update(lambda c: c.update(schedule=[r for i, r in enumerate(c["schedule"]) if i != n]))
+        print("removed")
     elif cmd == "calibrate" and rest in (["start"], ["cancel"]):
         update(lambda c: c.update(calibrate=rest[0]))
         print(f"calibration {rest[0]} requested")
@@ -165,7 +284,7 @@ def main(a):
     elif cmd == "stats":
         stats()
     elif cmd == "update" and rest in ([], ["check"]):
-        update(rest == ["check"])
+        self_update(rest == ["check"])
     elif cmd == "probe":
         os.execvp("sudo", ["sudo", "python3", "/usr/local/libexec/batterypilotd.py", "probe"])
     else:

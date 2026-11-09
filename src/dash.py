@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Local server behind the BatteryPilot popover and overview window. Localhost only, guarded by a random token."""
-import json, os, plistlib, secrets, subprocess, threading, time
+import datetime, json, os, plistlib, secrets, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 D = "/Library/Application Support/BatteryPilot"
@@ -75,6 +75,34 @@ def live():
     return data
 
 
+def next_at(hhmm):
+    """Epoch of the next time the clock shows HH:MM, today or tomorrow."""
+    h, m = (int(x) for x in str(hhmm).split(":"))
+    assert 0 <= h < 24 and 0 <= m < 60
+    t = datetime.datetime.combine(datetime.date.today(), datetime.time(h, m))
+    if t.timestamp() <= time.time():
+        t += datetime.timedelta(days=1)
+    return int(t.timestamp())
+
+
+def clean_rules(raw, profiles):
+    """Checks the schedule sent by the dashboard and keeps only valid fields."""
+    out = []
+    for r in raw[:20]:
+        h, m = (int(x) for x in str(r["time"]).split(":"))
+        assert 0 <= h < 24 and 0 <= m < 60
+        days = sorted({int(d) for d in r.get("days") or range(7)})
+        assert all(0 <= d <= 6 for d in days)
+        rule = {"action": r["action"], "time": f"{h:02d}:{m:02d}", "days": days}
+        if r["action"] == "profile":
+            assert r["profile"] in profiles
+            rule["profile"] = r["profile"]
+        else:
+            assert r["action"] == "ready"
+        out.append(rule)
+    return out
+
+
 def do(a):
     act = a.get("do")
     if act == "profile":
@@ -91,6 +119,19 @@ def do(a):
         update(lambda c: c.update(override="full"))
     elif act == "calibrate" and a.get("what") in ("start", "cancel"):
         update(lambda c: c.update(calibrate=a["what"]))
+    elif act == "pause":  # minutes, 0 resumes the limit
+        m = int(a["minutes"])
+        assert 0 <= m <= 2880
+        update(lambda c: c.update(pause_until=int(time.time() + m * 60) if m else None))
+    elif act == "ready":  # one-time ready-by plan, no time removes it
+        at = next_at(a["time"]) if a.get("time") else None
+        update(lambda c: c.update(ready_by={"at": at} if at else None, ready_skip=None))
+    elif act == "ready_cancel":  # skip the plan that is charging right now
+        t = int(a["at"])
+        update(lambda c: c.update(ready_skip=t, ready_by=None if (c.get("ready_by") or {}).get("at") == t else c.get("ready_by")))
+    elif act == "schedule":
+        rules = clean_rules(a["rules"], (rd(CFG) or {}).get("profiles", {}))
+        update(lambda c: c.update(schedule=rules))
     elif act == "notify":
         update(lambda c: c.update(notify_limit=bool(a["on"])))
     elif act == "overview" and "overview" in HOOKS:

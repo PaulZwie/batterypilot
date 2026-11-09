@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """BatteryPilot daemon (root). Event driven, the charge control backend is probed at runtime."""
-import json, os, plistlib, re, select, shutil, signal, subprocess, sys, time
+import datetime, json, os, plistlib, re, select, shutil, signal, subprocess, sys, time
 
 D = "/Library/Application Support/BatteryPilot"
 C = f"{D}/cfg"
 CFG, ST, HIST = f"{C}/config.json", f"{D}/status.json", f"{D}/history.jsonl"
 CAL, RES = f"{D}/calibration.json", f"{D}/result.json"
 ORIG = f"{D}/native_orig.json"
+SCHED = f"{D}/schedule_state.json"  # last applied schedule event and the ready-by plan that is charging
+MIN_PER_PCT, READY_BUFFER, READY_HOLD = 1.0, 15 * 60, 2 * 3600  # minutes to charge one percent, safety margin, hold at 100% after the deadline
 PD = "com.apple.smartcharging.topoffprotection"
 SMC = os.environ.get("SMC") or shutil.which("smc") or next(
     (x for x in ("/usr/local/libexec/batterypilot/smc", "/usr/local/bin/smc", "/opt/homebrew/bin/smc") if os.access(x, os.X_OK)), "smc")
 ACTIVE = ("charge", "hold", "drain", "recharge")
-DEFAULT = {"active": "home", "override": None, "calibrate": None, "notify_limit": False,
+DEFAULT = {"active": "home", "override": None, "calibrate": None, "notify_limit": False, "schedule": [],
            "profiles": {"home": {"limit": 65, "sail": 55},
                         "work": {"limit": 80, "sail": 70},
                         "travel": {"limit": 100, "sail": 95}}}
@@ -207,6 +209,78 @@ def log(row):
         f.write(json.dumps(row) + "\n")
 
 
+def selection(cfg):
+    """What the person picked as limit: the active profile, or the custom limit."""
+    return json.dumps([cfg.get("active"), cfg.get("manual"), cfg["profiles"].get(cfg.get("active"))], sort_keys=True)
+
+
+def hm(t, now):
+    """Clock time of an epoch, with the weekday when it is not today."""
+    same = time.strftime("%Y%j", time.localtime(t)) == time.strftime("%Y%j", time.localtime(now))
+    return time.strftime("%H:%M" if same else "%a %H:%M", time.localtime(t))
+
+
+def fires(rule, now, back=0, ahead=0):
+    """Epochs at which a schedule rule triggers, from `back` days before today to `ahead` days after. Days are 0 = Monday."""
+    try:
+        h, m = (int(x) for x in rule["time"].split(":"))
+        days = rule.get("days") or range(7)
+        today = datetime.date.fromtimestamp(now)
+        out = []
+        for k in range(-back, ahead + 1):
+            d = today + datetime.timedelta(days=k)
+            if d.weekday() in days:
+                out.append(int(datetime.datetime.combine(d, datetime.time(h, m)).timestamp()))
+        return out
+    except Exception:  # a broken rule never stops the daemon
+        return []
+
+
+def lead(pct):
+    """Seconds needed to charge from pct to 100%, plus a safety margin."""
+    return max(0, 100 - pct) * MIN_PER_PCT * 60 + READY_BUFFER
+
+
+def ready_times(cfg, now):
+    """Deadlines of the one-time and the recurring ready-by plans around now."""
+    one, out = cfg.get("ready_by"), []
+    if isinstance(one, dict) and isinstance(one.get("at"), (int, float)):
+        out.append(int(one["at"]))
+    for r in cfg.get("schedule") or []:
+        if r.get("action") == "ready":
+            out += fires(r, now, back=1, ahead=1)
+    return out
+
+
+def ready_active(cfg, pct, now, started):
+    """Deadline of the ready-by plan that is charging now, or None. A plan starts early enough to be full at the deadline,
+    keeps going once started, and holds 100% for READY_HOLD afterwards."""
+    for t in sorted(ready_times(cfg, now)):
+        if t != cfg.get("ready_skip") and now <= t + READY_HOLD and (t == started or t - lead(pct) <= now):
+            return t
+    return None
+
+
+def due_profile(cfg, now, since):
+    """The newest profile switch that triggered after `since` and up to now, as (epoch, rule), or None."""
+    best = None
+    for r in cfg.get("schedule") or []:
+        if r.get("action") == "profile" and r.get("profile") in cfg["profiles"]:
+            for t in fires(r, now, back=1):
+                if since < t <= now and (best is None or t > best[0]):
+                    best = (t, r)
+    return best
+
+
+def plan(cfg, now):
+    """The next few events as [epoch, kind, profile], soonest first. Kind is profile or ready."""
+    ev = [[t, r.get("action"), r.get("profile")] for r in cfg.get("schedule") or [] for t in fires(r, now, ahead=7) if t > now]
+    one = cfg.get("ready_by")
+    if isinstance(one, dict) and isinstance(one.get("at"), (int, float)) and one["at"] > now:
+        ev.append([int(one["at"]), "ready", None])
+    return sorted(ev, key=lambda e: e[0])[:4]
+
+
 def main():
     global backend, rel_alt
     os.makedirs(C, exist_ok=True)
@@ -233,6 +307,8 @@ def main():
     if not os.path.exists(CFG):
         save(CFG, DEFAULT, 0o664)
     wake, cal = Wake(C), load(CAL, {"stage": None})
+    sst = load(SCHED, {})
+    sched_last = max(sst.get("last", time.time()), time.time() - 3600)  # after a restart only recent events still count
     allowed = caf = last_key = applied = plug_prev = pick_prev = None
     held = (load(ST) or {}).get("allowed")  # band state survives a restart
     t_apply = 0
@@ -259,15 +335,41 @@ def main():
         if req:
             cfg["calibrate"] = None
             save(CFG, cfg, 0o664)
-        pick = json.dumps([cfg.get("active"), cfg.get("manual"), cfg["profiles"].get(cfg.get("active"))], sort_keys=True)
-        if pick_prev is not None and pick != pick_prev and cfg.get("override") == "full":
-            cfg["override"] = None  # choosing a limit or profile ends a pending charge to 100%
+        pick = selection(cfg)
+        if pick_prev is not None and pick != pick_prev and (cfg.get("override") == "full" or cfg.get("pause_until")):
+            cfg["override"] = cfg["pause_until"] = None  # choosing a limit or profile ends a charge to 100% or a pause
             save(CFG, cfg, 0o664)
+        rules_sig = json.dumps(cfg.get("schedule") or [], sort_keys=True)
+        if sst.get("sig") != rules_sig:  # rules changed, only events from now on count
+            sst["sig"], sched_last = rules_sig, now
+            save(SCHED, sst)
+        due = due_profile(cfg, now, sched_last)
+        sched_last = now
+        if due:
+            cfg["active"] = due[1]["profile"]
+            save(CFG, cfg, 0o664)
+            sst.update(applied=int(now), last=int(now))
+            save(SCHED, sst)
+            pick = selection(cfg)  # a scheduled switch is not a manual choice, it must not end a pause
         pick_prev = pick
+        pu = cfg.get("pause_until")
+        if pu and now >= pu:
+            cfg["pause_until"] = pu = None
+            save(CFG, cfg, 0o664)
+        one = cfg.get("ready_by")
+        if one is not None and not (isinstance(one, dict) and now <= one.get("at", 0) + READY_HOLD):
+            cfg["ready_by"] = None  # a one-time plan is used up
+            save(CFG, cfg, 0o664)
+        rdy = ready_active(cfg, b["pct"], now, sst.get("ready"))
+        if rdy != sst.get("ready"):
+            sst["ready"] = rdy
+            save(SCHED, sst)
         pname = cfg.get("active")
         p = cfg["profiles"].get(pname) if pname else None
         if p is None:  # no profile selected, use the custom limit from the slider
             p, pname = cfg.get("manual") or DEFAULT["profiles"]["home"], "custom"
+        if pu or rdy:  # a pause or a ready-by plan lifts the limit for now
+            p, pname = {"limit": 100, "sail": 95}, "paused" if pu else "ready"
         lim = min(100, max(20, int(p["limit"])))
         sail = min(lim - 1, max(5, int(p["sail"])))
         if backend is None:
@@ -293,6 +395,10 @@ def main():
             want = False
         else:  # inside the sailing band, keep doing what we did
             want = True if held is None else held
+        if not msg and pu:
+            msg = f"Limit paused until {hm(pu, now)}"
+        elif not msg and rdy:
+            msg = f"Charging to be ready by {hm(rdy, now)}"
         held = want
         sig = (want, lim if native and not want else None)
         if now >= fail_until and (sig != applied or now >= next_assert):
@@ -324,11 +430,17 @@ def main():
                     msg = f"macOS reports {fw}%, expected {lim}%" if fw else f"macOS limit not active yet, expected {lim}%"
         near = min(abs(b["pct"] - lim), abs(b["pct"] - sail)) <= 3
         interval = 30 if (stage in ACTIVE or near or cfg.get("override")) else 180
+        if pu:
+            interval = min(interval, max(2, pu - now))  # wake when the pause ends
+        if pu or rdy or cfg.get("schedule") or cfg.get("ready_by"):
+            interval = min(interval, 60)  # check the clock about once a minute
         st = dict(b, allowed=allowed is not False, profile=pname, limit=lim, sail=sail, msg=msg,
                   stage=stage, calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
+                  pause_until=pu, ready=rdy, lead=int(lead(b["pct"])), plan=plan(cfg, now), sched_t=sst.get("applied", 0),
                   cut=backend == "adapter" and allowed is False,
                   health=b["raw_max"] / b["design"] * 100 if b["design"] and b["raw_max"] else None)
-        key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut", "override", "warn"))
+        key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut", "override", "warn",
+                                         "pause_until", "ready", "plan", "sched_t"))
         if key != last_key or now - last_write > 600:  # write only on change, spares the SSD
             save(ST, dict(st, t=now))
             last_key, last_write = key, now
