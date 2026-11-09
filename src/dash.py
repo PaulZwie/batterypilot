@@ -27,6 +27,14 @@ def update(fn):
     os.replace(t, CFG)
 
 
+def pick(b, key, default=0):
+    """Some Macs report capacity values inside BatteryData instead of at the top level."""
+    v = b.get(key)
+    if v is None:
+        v = (b.get("BatteryData") or {}).get(key)
+    return default if v is None else v
+
+
 def history(span):
     rows, cut = [], time.time() - span
     try:
@@ -59,8 +67,9 @@ def live():
 
     def watts(v):  # telemetry is in milliwatts, ignore anything implausible
         return round(v / 1000, 1) if isinstance(v, (int, float)) and 0 < v / 1000 < 400 else None
-    data = {"temp": b.get("Temperature", 0) / 100, "batt_w": round(b.get("Voltage", 0) * amp / 1e6, 1),
-            "cycles": b.get("CycleCount", 0), "raw_max": b.get("AppleRawMaxCapacity", 0), "design": b.get("DesignCapacity", 0),
+    tp = pick(b, "Temperature", None)
+    data = {"temp": None if tp is None else tp / 100, "batt_w": round(b.get("Voltage", 0) * amp / 1e6, 1),
+            "cycles": pick(b, "CycleCount"), "raw_max": pick(b, "AppleRawMaxCapacity"), "design": pick(b, "DesignCapacity"),
             "sys_w": watts(t.get("SystemLoad")), "adapter_w": ad.get("Watts") if isinstance(ad.get("Watts"), int) else None}
     _live = (time.time(), data)
     return data

@@ -110,7 +110,7 @@ $('#add').onclick=()=>{const n=$('#nn').value.trim();if(n){act({do:'set',name:n,
 $('#sw').onclick=()=>act({do:'notify',on:!S.config.notify_limit});
 function chart(){
  const h=S.history||[],l=S.live||{},s=S.status,svg=$('#cv');
- const val=r=>tab=='pct'?r.pct:tab=='temp'?r.temp:tab=='watts'?r.volt*r.amps/1e6:l.design?r.raw_max/l.design*100:null;
+ const val=r=>tab=='pct'?r.pct:tab=='temp'?r.temp:tab=='watts'?r.volt*r.amps/1e6:l.design&&r.raw_max>l.design*.3?r.raw_max/l.design*100:null;
  const pts=h.map(r=>[r.t,val(r)]).filter(p=>p[1]!=null);
  if(pts.length<2){svg.innerHTML='<text x="320" y="115" text-anchor="middle" class="ax">Collecting data, check back in a few minutes</text>';return}
  const W=640,H=230,L=42,R=10,T=10,B=26,t1=Date.now()/1000,t0=t1-span;
@@ -136,7 +136,7 @@ function render(){
  pills($('#tabs'),TB,tab,k=>{tab=k;render()});pills($('#spans'),SP,span,k=>{span=+k;load()});chart();
  const st=['charge','hold','drain','recharge'],nm=['Charge to 100%','Rest one hour','Drain to 10%','Recharge'],i=st.indexOf(s.stage),dn=s.stage=='done';
  $('#steps').innerHTML=nm.map((n,k)=>`<div class="st ${dn||k<i?'dn':''} ${k==i?'cur':''}"><b></b><span>${n}</span></div>`).join('');
- $('#ct').textContent=s.calibrating?s.msg:r&&r.measured_mah?`Last result ${Math.round(r.measured_mah)} mAh, ${r.health.toFixed(1)}% of design capacity.`:'Measures the real capacity of your battery. Takes several hours.';
+ $('#ct').textContent=s.calibrating?s.msg:r&&r.measured_mah?`Last result ${Math.round(r.measured_mah)} mAh${r.health?`, ${r.health.toFixed(1)}% of design capacity`:''}.`:'Measures the real capacity of your battery. Takes several hours.';
  $('#cs').disabled=s.calibrating;$('#cc').disabled=!s.calibrating}
 setInterval(load,4000);document.addEventListener('visibilitychange',load);load();
 </script></body></html>

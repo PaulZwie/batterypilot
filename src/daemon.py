@@ -120,16 +120,25 @@ def set_charging(on, lim=None):
     return ok
 
 
+def pick(b, key, default=0):
+    """Some Macs report capacity values inside BatteryData instead of at the top level."""
+    v = b.get(key)
+    if v is None:
+        v = (b.get("BatteryData") or {}).get(key)
+    return default if v is None else v
+
+
 def battery():
     b = plistlib.loads(run("ioreg", "-arn", "AppleSmartBattery").stdout.encode())[0]
     cur, mx = b.get("CurrentCapacity", 0), b.get("MaxCapacity", 100) or 100
     amp = b.get("InstantAmperage", 0)
     if amp > 2**63:
         amp -= 2**64
+    t = pick(b, "Temperature", None)  # not every Mac reports a temperature
     return dict(pct=cur if mx == 100 else round(100 * cur / mx), plugged=bool(b.get("ExternalConnected")),
-                design=b.get("DesignCapacity", 0),
-                raw_max=b.get("AppleRawMaxCapacity", mx), raw_cur=b.get("AppleRawCurrentCapacity", cur),
-                cycles=b.get("CycleCount", 0), temp=b.get("Temperature", 0) / 100,
+                design=pick(b, "DesignCapacity"),
+                raw_max=pick(b, "AppleRawMaxCapacity"), raw_cur=pick(b, "AppleRawCurrentCapacity", cur),
+                cycles=pick(b, "CycleCount"), temp=None if t is None else t / 100,
                 volt=b.get("Voltage", 0), amps=amp)
 
 
@@ -318,7 +327,7 @@ def main():
         st = dict(b, allowed=allowed is not False, profile=pname, limit=lim, sail=sail, msg=msg,
                   stage=stage, calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
                   cut=backend == "adapter" and allowed is False,
-                  health=b["raw_max"] / b["design"] * 100 if b["design"] else None)
+                  health=b["raw_max"] / b["design"] * 100 if b["design"] and b["raw_max"] else None)
         key = tuple(st[k] for k in ("pct", "plugged", "allowed", "profile", "limit", "sail", "msg", "stage", "smc_ok", "cut", "override", "warn"))
         if key != last_key or now - last_write > 600:  # write only on change, spares the SSD
             save(ST, dict(st, t=now))

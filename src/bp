@@ -63,10 +63,14 @@ def stats():
     amp = b.get("InstantAmperage", 0)
     if amp > 2**63:
         amp -= 2**64
-    mx, des = b.get("AppleRawMaxCapacity", 0), b.get("DesignCapacity", 0)
-    print(f"health    {mx / des * 100:.1f}% ({mx} of {des} mAh)" if des else "health    unknown")
-    print(f"cycles    {b.get('CycleCount', 0)}")
-    print(f"temp      {b.get('Temperature', 0) / 100:.1f} C")
+    def pick(key):  # some Macs report these inside BatteryData instead of at the top level
+        v = b.get(key)
+        return (b.get("BatteryData") or {}).get(key) if v is None else v
+    mx, des = pick("AppleRawMaxCapacity") or 0, pick("DesignCapacity") or 0
+    print(f"health    {mx / des * 100:.1f}% ({mx} of {des} mAh)" if des and mx else "health    unknown")
+    print(f"cycles    {pick('CycleCount') or 0}")
+    t = pick("Temperature")
+    print(f"temp      {t / 100:.1f} C" if t is not None else "temp      not reported by this Mac")
     print(f"power     {b.get('Voltage', 0) * amp / 1e6:+.1f} W (negative means discharging)")
     r = rd(RES)
     print(f"measured  {r['measured_mah']:.0f} mAh" if r and r["measured_mah"] else "measured  not calibrated yet")
@@ -77,7 +81,8 @@ def result():
     if not r:
         sys.exit("No calibration result yet.")
     m = r["measured_mah"]
-    print(f"measured capacity {m:.0f} mAh ({r['health']:.1f}% of design)" if m
+    h = f" ({r['health']:.1f}% of design)" if r.get("health") else ""  # unknown when the Mac reports no design capacity
+    print(f"measured capacity {m:.0f} mAh{h}" if m
           else "drain was too short for a reliable measurement, run it again from 100% to 10%")
     print(f"gauge before {r['gauge_before']} mAh, after {r['gauge_after']} mAh, cycles {r['cycles']}, "
           f"run {time.strftime('%d.%m.%Y', time.localtime(r['time']))}")

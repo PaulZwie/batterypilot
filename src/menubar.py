@@ -161,7 +161,8 @@ class App(rumps.App):
             elif st == "done":
                 r = rd(RES) or {}
                 m = r.get("measured_mah")
-                t = f"Done. Measured capacity {m:.0f} mAh ({r['health']:.1f}% of design)." if m \
+                h = f" ({r['health']:.1f}% of design)" if r.get("health") else ""
+                t = f"Done. Measured capacity {m:.0f} mAh{h}." if m \
                     else "Done, but the drain was too short for a reliable measurement."
             else:
                 t = "Calibration cancelled." if p["stage"] in ACTIVE else None
@@ -222,7 +223,8 @@ class App(rumps.App):
         if not r:
             return rumps.alert("No calibration result yet")
         m = r["measured_mah"]
-        rumps.alert("Last calibration", f"Measured capacity {m:.0f} mAh ({r['health']:.1f}% of design)\n"
+        h = f" ({r['health']:.1f}% of design)" if r.get("health") else ""
+        rumps.alert("Last calibration", f"Measured capacity {m:.0f} mAh{h}\n"
                     f"Gauge before {r['gauge_before']} mAh, after {r['gauge_after']} mAh\n"
                     f"Cycles {r['cycles']}, run {time.strftime('%d.%m.%Y', time.localtime(r['time']))}"
                     if m else "Drain was too short for a reliable measurement. Run it again from 100% to 10%.")
@@ -234,7 +236,7 @@ class App(rumps.App):
             return
         h = f"{s['health']:.1f}% ({s['raw_max']} of {s['design']} mAh)" if s["health"] else "unknown"
         rumps.alert("Battery statistics",
-                    f"Health {h}\nCycles {s['cycles']}\nTemperature {s['temp']:.1f} °C\n"
+                    f"Health {h}\nCycles {s['cycles']}\nTemperature {'not reported' if s['temp'] is None else format(s['temp'], '.1f') + ' °C'}\n"
                     f"Power {s['volt'] * s['amps'] / 1e6:+.1f} W\n"
                     + (f"Calibrated capacity {r['measured_mah']:.0f} mAh\n" if r and r["measured_mah"] else "Not calibrated yet\n")
                     + f"Charge control {s['mode']}, updated {time.strftime('%H:%M', time.localtime(s['t']))}")
