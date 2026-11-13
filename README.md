@@ -4,7 +4,7 @@ A small menu bar app for Mac that protects your battery by stopping charging at 
 
 - A slider for a custom limit, no profile needed, plus optional profiles such as home, work and travel
 - A live dashboard with power flow, history and battery health
-- One click to charge to 100% before a trip
+- Charge once to a percentage you pick, 100% included, for example before a trip. Cancel it at any time and your profile applies again right away
 - A calibration that measures your battery's real capacity
 - Notifications when the limit is reached
 
@@ -32,7 +32,7 @@ You can read exactly what the installer does in [`install.sh`](install.sh) befor
 
 ## Use
 
-In the dashboard (menu > Open dashboard) drag the limit slider to any value from 20 to 100 and it applies right away. Profiles are optional, and the Add button saves the current slider values as one. Click the battery icon in the menu bar to switch profile, edit a profile, set a custom limit, charge to 100% once, open the dashboard or start a calibration. Choose Quit to close the icon. Your limit stays active in the background even when the icon is closed. To bring the icon back, open **BatteryPilot** from your Applications folder (or press `Cmd + Space` and type BatteryPilot). It also starts by itself every time you log in.
+In the dashboard (menu > Open dashboard) drag the limit slider to any value from 20 to 100 and it applies right away. Profiles are optional, and the Add button saves the current slider values as one. Click the battery icon in the menu bar to switch profile, edit a profile, set a custom limit, charge once to a percentage you pick, open the dashboard or start a calibration. Under **Charge once to** choose 80%, 90%, 100% or any other value, and BatteryPilot charges up to it and then hands back to your profile by itself. The same menu has **Cancel, back to profile** to stop early, and the dashboard has the same slider and a cancel button. Choose Quit to close the icon. Your limit stays active in the background even when the icon is closed. To bring the icon back, open **BatteryPilot** from your Applications folder (or press `Cmd + Space` and type BatteryPilot). It also starts by itself every time you log in.
 
 **Two ways to hold the limit.** Under the sliders you can choose how the battery is kept at the limit:
 
@@ -49,7 +49,9 @@ bp profile            list profiles, bp profile work switches
 bp limit 75           custom limit, no profile needed
 bp set gym 75 65      add or edit a profile (limit 75, resume at 65)
 bp strategy macos     let macOS top up (one limit), bp strategy band for two sliders
-bp full               charge to 100% once
+bp charge 85          charge to 85% once, then the profile takes over again
+bp charge cancel      cancel that and go back to the profile right away
+bp full               same as bp charge 100
 bp calibrate start    start a calibration (takes several hours)
 bp stats              live battery statistics
 bp probe              test that charge control works
