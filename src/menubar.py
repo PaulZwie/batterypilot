@@ -59,6 +59,12 @@ def macos(s):
     return s.get("strategy", "macos" if s["mode"] == "native" else "band") == "macos"
 
 
+def once(s):
+    """Percent of a running one-time charge, or None. Status files of older versions say full for 100."""
+    o = s.get("override")
+    return 100 if o == "full" else o if isinstance(o, int) and not isinstance(o, bool) else None
+
+
 def above_limit(s):
     """Plugged in, charging held off, and the battery is higher than the limit, so it will drain down to it."""
     return bool(s["plugged"] and not s["allowed"] and not s["calibrating"] and s["pct"] > s["limit"])
@@ -67,14 +73,15 @@ def above_limit(s):
 def limit_events(p, s):
     """Messages about charging between two status snapshots, p before and s now."""
     lim, out = s["limit"], []
-    start = s.get("override") == "full" and p.get("override") != "full"
-    end = p.get("override") == "full" and not s.get("override")
+    ts, tp = once(s), once(p)
+    start = ts is not None and ts != tp
+    end = tp is not None and ts is None
     pause_on, pause_off = bool(s.get("pause_until")) and not p.get("pause_until"), bool(p.get("pause_until")) and not s.get("pause_until")
     ready_on, ready_off = bool(s.get("ready")) and not p.get("ready"), bool(p.get("ready")) and not s.get("ready")
     if start:
-        out.append("Charging to 100% now." if s["plugged"] else "Will charge to 100% as soon as the charger is plugged in.")
+        out.append(f"Charging to {ts}% now." if s["plugged"] else f"Will charge to {ts}% as soon as the charger is plugged in.")
     if end:
-        out.append("Charged to 100%." if s["pct"] >= 99 else "Charge to 100% cancelled.")
+        out.append(f"Charged to {tp}%." if s["pct"] >= tp - 1 else f"Charge to {tp}% cancelled, back to your profile.")
     if pause_on:
         out.append(f"Limit paused until {clock(s['pause_until'])}.")
     if pause_off:
@@ -95,7 +102,7 @@ def limit_events(p, s):
                                                   or (macos(s) and p["pct"] < lim <= s["pct"])):
         out.append(f"Limit of {lim}% reached.")
     if not p["allowed"] and s["allowed"] and s["plugged"] and not (start or pause_on or ready_on) \
-            and not s.get("override") and not s.get("pause_until") and not s.get("ready"):
+            and ts is None and not s.get("pause_until") and not s.get("ready"):
         out.append(f"Charging resumed, limit is {lim}%.")
     return out
 
@@ -109,6 +116,11 @@ class App(rumps.App):
         self.pause.update([rumps.MenuItem(t, callback=lambda _, m=m: self.pause_for(m))
                            for t, m in (("for 30 minutes", 30), ("for 1 hour", 60), ("for 2 hours", 120), ("for 4 hours", 240))]
                           + [rumps.MenuItem("Resume limit now", callback=lambda _: self.pause_for(0))])
+        self.once = rumps.MenuItem("Charge once to")
+        self.once_x = rumps.MenuItem("Cancel, back to profile")  # greyed out until a one-time charge is running
+        self.once.update([rumps.MenuItem(f"{v}%", callback=lambda _, v=v: self.charge_to(v)) for v in (80, 90, 100)]
+                         + [rumps.MenuItem("Other…", callback=self.charge_other), None, self.once_x])
+        self.once_x_on = False
         self.nl = rumps.MenuItem("Notify when limit is reached",
                                  callback=lambda _: update(lambda c: c.update(notify_limit=not c.get("notify_limit"))))
         self.cal.update([rumps.MenuItem("Start full calibration", callback=self.cal_start),
@@ -117,7 +129,7 @@ class App(rumps.App):
         self.menu = [self.head, self.sub, None, self.prof,
                      rumps.MenuItem("Edit or add profile…", callback=self.edit),
                      rumps.MenuItem("Set custom limit…", callback=self.custom),
-                     rumps.MenuItem("Charge to 100% once", callback=lambda _: update(lambda c: c.update(override="full"))),
+                     self.once,
                      self.pause, rumps.MenuItem("Ready by…", callback=self.ready_by),
                      rumps.MenuItem("Cancel ready-by", callback=self.ready_cancel),
                      self.nl, None, self.cal, rumps.MenuItem("Battery statistics…", callback=self.stats),
@@ -151,6 +163,35 @@ class App(rumps.App):
                 t = c.setdefault("manual", {"limit": 80, "sail": 70})
             t["strategy"] = new
         update(f)
+
+    def charge_to(self, pct):
+        """One-time charge to pct. The daemon ends it when the level is reached and the profile applies again."""
+        s = rd(ST) or {}
+        if not 20 <= pct <= 100:
+            return notify("Pick a value between 20 and 100.")
+        if pct <= s.get("pct", 0):
+            return notify(f"The battery is already at {s['pct']}%, pick a higher value.")
+        if pct <= s.get("limit", 0):
+            return notify(f"Charging already goes up to {s['limit']}% right now, pick a higher value.")
+        update(lambda c: c.update(override=pct))
+
+    def charge_other(self, _):
+        front()
+        s = rd(ST) or {}
+        start = min(100, max(s.get("limit", 80), s.get("pct", 0)) + 10)
+        w = rumps.Window("Percent to charge to, for example 85. After that your profile takes over again.",
+                         "Charge once to", str(start), "Charge", "Cancel", dimensions=(260, 24))
+        r = w.run()
+        try:
+            assert r.clicked
+            pct = int(r.text.strip().rstrip("%"))
+        except Exception:
+            return
+        self.charge_to(pct)
+
+    def charge_cancel(self, _):
+        """Drop the one-time charge, the profile applies again right away."""
+        update(lambda c: c.update(override=None))
 
     def pause_for(self, minutes):
         until = int(time.time() + minutes * 60) if minutes else None
@@ -209,6 +250,11 @@ class App(rumps.App):
         self.icon = icons.icon(state, s["pct"])
         self.title = f" {s['pct']}%" + (" cal" if s["calibrating"] else "")
         self.strat.state = int(macos(s))
+        t = once(s)
+        self.once_x.title = f"Cancel charge to {t}%, back to profile" if t else "Cancel, back to profile"
+        if (t is not None) != self.once_x_on:  # grey the item out while no one-time charge is running
+            self.once_x.set_callback(self.charge_cancel if t else None)
+            self.once_x_on = t is not None
         rng = f"macOS holds at {s['limit']}%" if macos(s) else f"{s['sail']}–{s['limit']}%"
         self.head.title = f"{s['pct']}%   " + {"paused": "limit paused", "ready": "charging for ready-by"}.get(
             s["profile"], f"{s['profile']} ({rng})")

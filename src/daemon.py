@@ -39,11 +39,24 @@ def load(p, default=None):
 
 
 def save(p, obj, perm=0o644):
-    t = p + ".tmp"
+    # The temp file lives in D, which only root can write. The cfg folder is group-writable, so a temp file created next
+    # to config.json there could be swapped for a symlink by another process and make root overwrite any file.
+    t = os.path.join(D, "." + os.path.basename(p) + ".tmp")
     with open(t, "w") as f:
         json.dump(obj, f)
     os.chmod(t, perm)
     os.replace(t, p)
+
+
+def target(cfg):
+    """Percent of a running one-time charge, or None. The config is writable by users, so only a clean number counts.
+    Older versions stored the word full, which means 100."""
+    ov = cfg.get("override")
+    if ov == "full":
+        return 100
+    if isinstance(ov, int) and not isinstance(ov, bool):
+        return min(100, max(20, ov))
+    return None
 
 
 def has(key):
@@ -359,9 +372,11 @@ def main():
             cfg["calibrate"] = None
             save(CFG, cfg, 0o664)
         pick = selection(cfg)
-        if pick_prev is not None and pick != pick_prev and (cfg.get("override") == "full" or cfg.get("pause_until")):
-            cfg["override"] = cfg["pause_until"] = None  # choosing a limit or profile ends a charge to 100% or a pause
+        tgt = target(cfg)
+        if pick_prev is not None and pick != pick_prev and (tgt or cfg.get("pause_until")):
+            cfg["override"] = cfg["pause_until"] = None  # choosing a limit or profile ends a one-time charge or a pause
             save(CFG, cfg, 0o664)
+            tgt = None
         rules_sig = json.dumps(cfg.get("schedule") or [], sort_keys=True)
         if sst.get("sig") != rules_sig:  # rules changed, only events from now on count
             sst["sig"], sched_last = rules_sig, now
@@ -403,17 +418,17 @@ def main():
             strat = "band"
         on_batt = not b["plugged"]
         stage, msg, warn = cal.get("stage"), "", ""
+        if tgt and stage not in ACTIVE and b["pct"] >= tgt:  # target reached, the profile takes over again right now
+            cfg["override"] = tgt = None
+            save(CFG, cfg, 0o664)
         if stage in ACTIVE:
             strat = "band"  # calibration needs charging fully on or off
             want, msg = calibrate(cal, b, dt, on_batt, auto)
             save(CAL, cal)
             stage = cal["stage"]
             want = want or native  # keep the macOS limit off while calibrating
-        elif cfg.get("override") == "full":
-            want, msg = True, "Charging to 100% once"
-            if b["pct"] >= 100:
-                cfg["override"] = None
-                save(CFG, cfg, 0o664)
+        elif tgt:
+            want, msg = True, f"Charging to {tgt}% once"
         elif strat == "macos":
             want = lim >= 100  # hold at lim, the firmware decides when to top up
         elif lim >= 100 or b["pct"] <= max(sail, 15 if auto else 10):
@@ -459,13 +474,13 @@ def main():
                 if fw != hold:
                     msg = f"macOS reports {fw}%, expected {hold}%" if fw else f"macOS limit not active yet, expected {hold}%"
         near = min(abs(b["pct"] - lim), abs(b["pct"] - sail)) <= 3
-        interval = 30 if (stage in ACTIVE or near or cfg.get("override")) else 180
+        interval = 30 if (stage in ACTIVE or near or tgt) else 180
         if pu:
             interval = min(interval, max(2, pu - now))  # wake when the pause ends
         if pu or rdy or cfg.get("schedule") or cfg.get("ready_by"):
             interval = min(interval, 60)  # check the clock about once a minute
         st = dict(b, allowed=allowed is not False, profile=pname, limit=lim, sail=sail, msg=msg,
-                  stage=stage, strategy=strat, macos_ok=macos_limit_ok(), calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=cfg.get("override"), warn=warn,
+                  stage=stage, strategy=strat, macos_ok=macos_limit_ok(), calibrating=stage in ACTIVE, smc_ok=ok, mode=backend, override=tgt, warn=warn,
                   pause_until=pu, ready=rdy, lead=int(lead(b["pct"])), plan=plan(cfg, now), sched_t=sst.get("applied", 0),
                   cut=backend == "adapter" and allowed is False,
                   health=b["raw_max"] / b["design"] * 100 if b["design"] and b["raw_max"] else None)

@@ -131,8 +131,14 @@ def do(a):
                 t = c.setdefault("manual", {"limit": 80, "sail": 70})
             t["strategy"] = a["value"]
         update(f)
-    elif act == "full":
-        update(lambda c: c.update(override="full"))
+    elif act == "full":  # older pages, same as charge_to 100
+        update(lambda c: c.update(override=100))
+    elif act == "charge_to":  # charge once to a chosen percentage, then the profile takes over again
+        pct = int(a["percent"])
+        assert 20 <= pct <= 100
+        update(lambda c: c.update(override=pct))
+    elif act == "charge_cancel":  # drop the one-time charge, the profile applies again right away
+        update(lambda c: c.update(override=None))
     elif act == "calibrate" and a.get("what") in ("start", "cancel"):
         update(lambda c: c.update(calibrate=a["what"]))
     elif act == "pause":  # minutes, 0 resumes the limit

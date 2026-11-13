@@ -71,7 +71,9 @@ input[type=time],select{border:0;border-radius:999px;padding:9px 16px;font:inher
 <div class="row"><span id="limlab">Hold at</span><input type="range" id="lim" min="20" max="100"><span id="limv"></span></div>
 <div class="row" id="sailrow"><span>Resume at</span><input type="range" id="sail" min="5" max="99"><span id="sailv"></span></div>
 <p class="hint">Move a slider to set a limit right away, no profile needed.<span class="np"> To keep these values, name them and press Add.</span></p>
-<div class="acts"><button class="pill" onclick="act({do:'full'})">Charge to 100% once</button><span class="po"><button class="pill" onclick="act({do:'overview'})">Open overview</button></span>
+<div class="row" id="oncerow"><span>Charge once to</span><input type="range" id="once" min="21" max="100" value="100" aria-label="Charge once to percent"><span id="oncev"></span></div>
+<div class="acts" style="margin-top:0"><button class="pill" id="oncego"></button><button class="pill hide" id="oncex">Cancel, back to profile</button></div><p class="hint" id="onceh"></p>
+<div class="acts"><span class="po"><button class="pill" onclick="act({do:'overview'})">Open overview</button></span>
 <span style="margin-left:auto;display:flex;align-items:center;gap:10px" class="np"><input type="text" id="nn" placeholder="New profile" maxlength="20"><button class="pill" id="add">Add</button></span></div>
 <div class="acts"><button class="sw" id="sw" role="switch" aria-label="Notify on charging events"></button><span>Notify me about charging events</span></div></section>
 <section class="card s4 np"><h3>Battery level</h3><div class="ring" id="r1"></div></section>
@@ -92,7 +94,8 @@ input[type=time],select{border:0;border-radius:999px;padding:9px 16px;font:inher
 <script>
 const $=s=>document.querySelector(s),POP=location.search.includes('pop');
 document.body.classList.toggle('pop',POP);
-let S,span=86400,tab='pct',drag=false,ST='band';
+let S,span=86400,tab='pct',drag=false,ST='band',ONCE=100,dragO=false,lastO=null;
+const onceT=s=>s.override=='full'?100:Number.isInteger(s.override)?s.override:null;
 const SP={86400:'24 h',604800:'7 days',2592000:'30 days'},TB={pct:'Level',temp:'Temperature',watts:'Power',health:'Health'};
 async function load(){if(document.hidden)return;try{S=await(await fetch('api/state?span='+span)).json();render()}catch(e){}}
 async function act(o){await fetch('api/do',{method:'POST',body:JSON.stringify(o)});setTimeout(load,1500)}
@@ -100,7 +103,7 @@ function view(s,l){
  const lim=s.limit,p=s.pct,w=l.batt_w,f=s.flow||(!s.plugged?'battery':w>0.5?'charging':w<-0.5?'draining':'holding');
  if(!s.smc_ok)return{c:'--bad',k:'Problem',t:'Charge control is not working',d:s.msg||'BatteryPilot cannot limit charging right now. Run bp probe in Terminal.',f};
  if(s.calibrating){const n=['charge','hold','drain','recharge'].indexOf(s.stage)+1;return{c:'--cal',k:'Calibrating',t:`Calibrating, step ${n} of 4`,d:s.msg.replace(/^Calibration \d\/4, /,'').replace(/^./,x=>x.toUpperCase()),f}}
- if(f=='charging')return{c:'--a',k:'Charging',t:`Charging to ${lim}%`,d:'The charger powers your Mac and fills the battery. Charging stops at your limit.',f};
+ if(f=='charging'){const o=onceT(s);return{c:'--a',k:'Charging',t:`Charging to ${o||lim}%`,d:o?'The charger powers your Mac and fills the battery. Charging stops at your one-time target, then your profile takes over again.':'The charger powers your Mac and fills the battery. Charging stops at your limit.',f}}
  if(f=='holding')return{c:'--ok',k:'Holding',t:`Holding at ${p}%`,d:'The charger powers your Mac. The battery rests, so it wears less.',f};
  if(f=='draining')return{c:'--warn',k:'Battery in use',t:'Using the battery while plugged in',d:'Your Mac needs more power than the charger delivers, or the level is above your limit.',f};
  return{c:'--warn',k:'On battery',t:'Running on battery',d:`Plug in the charger and BatteryPilot keeps the battery at ${lim}%.`,f}}
@@ -119,11 +122,22 @@ function ring(el,v,txt,sub,mark){const C=339.3,id='g'+el.id;let m='';
  if(mark!=null&&mark<100){const a=(mark/100*360-90)*Math.PI/180,x=70+Math.cos(a)*54,y=70+Math.sin(a)*54;m=`<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8.5" fill="#fff" style="filter:drop-shadow(0 1px 3px rgba(24,32,51,.45))"/><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="3.2" fill="var(--a)"/>`}
  el.innerHTML=`<svg viewBox="0 0 140 140"><defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="var(--a)"/><stop offset="1" stop-color="var(--b)"/></linearGradient></defs><circle cx="70" cy="70" r="54" fill="none" stroke="var(--grid)" stroke-width="14"/><circle cx="70" cy="70" r="54" fill="none" stroke="url(#${id})" stroke-width="14" stroke-linecap="round" stroke-dasharray="${C*Math.min(v,100)/100} ${C}" transform="rotate(-90 70 70)"/>${m}<text x="70" y="75" text-anchor="middle" font-size="26" font-weight="650" fill="var(--ink)">${txt}</text><text x="70" y="94" text-anchor="middle" font-size="10" fill="var(--mute)">${sub}</text></svg>`}
 function pills(el,obj,cur,fn){el.replaceChildren(...Object.keys(obj).map(k=>{const b=document.createElement('button');b.className='pill'+(k==cur?' on':'');b.textContent=obj[k];b.onclick=()=>fn(k);return b}))}
+function renderOnce(s){
+ const o=onceT(s),lo=Math.max(s.limit,s.pct)+1,r=$('#once'),off=lo>100;
+ if(o&&o!==lastO)ONCE=o;lastO=o;
+ r.disabled=$('#oncego').disabled=off;$('#oncerow').style.opacity=off?.5:1;$('#oncex').classList.toggle('hide',!o);
+ if(!off){r.min=lo;ONCE=Math.min(100,Math.max(lo,ONCE));if(!dragO)r.value=ONCE;r.style.setProperty('--p',(ONCE-lo)/Math.max(1,100-lo)*100+'%');$('#oncev').textContent=ONCE+' %'}else{$('#oncev').textContent='–'}
+ $('#oncego').textContent=o?`Change target to ${ONCE}%`:`Charge to ${ONCE}% once`;
+ $('#onceh').textContent=off?(s.pct>=100?'The battery is full.':`Charging already goes up to ${s.limit}% right now.`)
+  :o?`Charging to ${o}% once. Cancel to go back to your profile right away, otherwise it takes over by itself at ${o}%.`
+  :'Charges to the value you pick, then your profile takes over again. You can cancel any time.'}
 function sl(){const l=$('#lim'),a=$('#sail');a.max=Math.max(6,+l.value-1);if(+a.value>+a.max)a.value=a.max;
  for(const r of[l,a])r.style.setProperty('--p',(r.value-r.min)/(r.max-r.min)*100+'%');$('#limv').textContent=l.value+' %';$('#sailv').textContent=a.value+' %'}
 ['lim','sail'].forEach(id=>{const r=$('#'+id);r.oninput=()=>{drag=true;sl()};r.onchange=()=>{drag=false;act({do:'limit',limit:+$('#lim').value,sail:+$('#sail').value,strategy:ST})}});
 $('#add').onclick=()=>{const n=$('#nn').value.trim();if(n){act({do:'set',name:n,limit:+$('#lim').value,sail:+$('#sail').value,strategy:ST});$('#nn').value=''}};
 $('#sw').onclick=()=>act({do:'notify',on:!S.config.notify_limit});
+$('#once').oninput=e=>{dragO=true;ONCE=+e.target.value;if(S&&S.status)renderOnce(S.status)};$('#once').onchange=()=>{dragO=false};
+$('#oncego').onclick=()=>act({do:'charge_to',percent:ONCE});$('#oncex').onclick=()=>act({do:'charge_cancel'});
 function chart(){
  const h=S.history||[],l=S.live||{},s=S.status,svg=$('#cv');
  const val=r=>tab=='pct'?r.pct:tab=='temp'?(r.temp>0?r.temp:null):tab=='watts'?r.volt*r.amps/1e6:l.design&&r.raw_max>l.design*.3?r.raw_max/l.design*100:null;
@@ -163,7 +177,7 @@ function render(){
  pills($('#stp'),{band:'Two sliders',macos:'macOS top-up'},ST,k=>act({do:'strategy',value:k}));$('#stp').lastChild.disabled=s.macos_ok===false;
  $('#sth').textContent=ST=='macos'?'macOS holds the battery at the limit and tops it up by itself, like the charging limit in System Settings.':'BatteryPilot stops charging at the first value and starts again once the level falls to the second.';
  $('#sailrow').style.display=ST=='macos'?'none':'';$('#limlab').textContent=ST=='macos'?'Limit':'Hold at';
- if(!drag){$('#lim').value=p.limit;$('#sail').value=p.sail}sl();$('#sw').className='sw'+(c.notify_limit?' on':'');$('#sw').setAttribute('aria-checked',!!c.notify_limit);renderPause(s);
+ if(!drag){$('#lim').value=p.limit;$('#sail').value=p.sail}sl();$('#sw').className='sw'+(c.notify_limit?' on':'');$('#sw').setAttribute('aria-checked',!!c.notify_limit);renderPause(s);renderOnce(s);
  if(POP)return;
  const T=[['Level',s.pct+' %'],['Health',l.design?(l.raw_max/l.design*100).toFixed(1)+' %':'n/a'],['Cycles',l.cycles??'n/a'],['Temperature',l.temp!=null?l.temp.toFixed(1)+' °C':'n/a'],['Battery power',l.batt_w!=null?(l.batt_w>0?'+':'')+l.batt_w+' W':'n/a']];
  $('#kpis').innerHTML=T.map(t=>`<div class="kpi"><span>${t[0]}</span><b>${t[1]}</b></div>`).join('');

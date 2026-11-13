@@ -11,7 +11,9 @@ HELP = """usage  bp [status]
        bp set NAME LIMIT SAIL       add or edit a profile, for example bp set gym 75 65
        bp limit LIMIT [SAIL]        custom limit without a profile, for example bp limit 75
        bp strategy band|macos       two sliders, or let macOS top up with one limit (applies to the active profile)
-       bp full [cancel]             charge to 100% once, or cancel it
+       bp charge PERCENT            charge to PERCENT once, for example bp charge 85, then the profile takes over again
+       bp charge cancel             cancel that and go back to the profile right away
+       bp full [cancel]             same as bp charge 100, or cancel it
        bp pause DURATION|off        lift the limit for a while, for example bp pause 2h or bp pause 90m
        bp ready HH:MM|off|cancel    charge so the battery is full by then, once (bp ready 08:00)
        bp schedule                  list the schedule and what is coming up
@@ -42,6 +44,22 @@ def update(fn):
     with open(t, "w") as f:
         json.dump(c, f)
     os.replace(t, CFG)
+
+
+def charge_once(arg):
+    """Starts a one-time charge to a percentage. The daemon ends it by itself and the profile applies again."""
+    try:
+        pct = int(arg)
+        assert 20 <= pct <= 100
+    except Exception:
+        sys.exit("Give a percentage between 20 and 100, for example bp charge 85.")
+    s = rd(ST) or {}
+    if pct <= s.get("pct", 0):
+        sys.exit(f"The battery is already at {s['pct']}%, pick a higher value.")
+    if pct <= s.get("limit", 0):
+        sys.exit(f"Charging already goes up to {s['limit']}% right now, pick a higher value.")
+    update(lambda c: c.update(override=pct))
+    print(f"charging to {pct}% once, then the profile takes over again")
 
 
 def macos(s):
@@ -123,6 +141,8 @@ def self_update(check_only):
         tag = json.loads(out.stdout)["tag_name"]
     except Exception as e:
         sys.exit(f"Could not look up the latest release ({e}). Check your internet connection and try again.")
+    if not re.fullmatch(r"v?\d+(\.\d+)*", tag):  # the tag ends up in a shell command, accept version numbers only
+        sys.exit("The latest release has an unexpected tag name, not updating.")
     if cur != "unknown" and ver(tag) <= ver(cur):
         sys.exit(f"BatteryPilot {cur} is up to date.")
     print(f"installed {cur}, latest {tag}")
@@ -244,12 +264,16 @@ def main(a):
         update(f)
         print("two sliders: hold at the limit, resume at the lower value" if rest[0] == "band"
               else "macOS tops up by itself and holds at the limit")
+    elif cmd == "charge" and rest in (["cancel"], ["off"], ["stop"]):
+        update(lambda c: c.update(override=None))
+        print("one-time charge cancelled, the profile is active again")
+    elif cmd == "charge" and len(rest) == 1:
+        charge_once(rest[0].rstrip("%"))
     elif cmd == "full" and rest in (["cancel"], ["off"]):
         update(lambda c: c.update(override=None))
-        print("charge to 100% cancelled")
+        print("one-time charge cancelled, the profile is active again")
     elif cmd == "full":
-        update(lambda c: c.update(override="full"))
-        print("charging to 100% once")
+        charge_once("100")
     elif cmd == "pause" and len(rest) == 1:
         if rest[0] in ("off", "cancel", "stop"):
             update(lambda c: c.update(pause_until=None))
